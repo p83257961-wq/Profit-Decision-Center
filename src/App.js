@@ -6,7 +6,6 @@ import React, {
   useCallback,
 } from "react";
 import {
-  Building2,
   Trash2,
   BarChart3,
   Search,
@@ -15,52 +14,35 @@ import {
   TrendingUp,
   CheckCircle2,
   AlertTriangle,
-  Activity,
   Settings,
-  Target,
   Download,
   UploadCloud,
   Wallet,
-  Truck,
   CreditCard,
-  ShoppingCart,
   AlertCircle,
   PieChart,
   RotateCcw,
-  HelpCircle,
   Lock,
   Loader2,
-  Check,
   Gift,
   Zap,
   Layers,
   Sun,
   Moon,
-  Award,
-  Star,
   ChevronDown,
   ChevronUp,
-  ChevronRight,
-  Filter,
   Users,
   X,
   Info,
-  Menu,
-  Store,
 } from "lucide-react";
 import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip as RTooltip,
   ResponsiveContainer,
-  Cell,
   ComposedChart,
-  Line,
+  Bar,
 } from "recharts";
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
@@ -71,7 +53,6 @@ import {
   onSnapshot,
   setDoc,
   getDoc,
-  getDocs,
   deleteDoc,
   serverTimestamp,
 } from "firebase/firestore";
@@ -107,8 +88,6 @@ const groupOrdersByMonth = (orders) => {
 };
 
 /* ─── Constants ────────────────────────────────────────────────── */
-const MONO = "'JetBrains Mono',monospace";
-
 const SL_PAYMENT_RATES = {
   信用卡: { rate: 0.022, flat: 0 },
   "LINE Pay": { rate: 0.023, flat: 0 },
@@ -165,6 +144,15 @@ const numOrZero = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 const safeText = (v) => String(v ?? "").trim();
+/* 日期正規化：容忍 2026/1/5、2026-1-5、含時間字串，一律轉成 YYYY-MM-DD */
+const normDate = (raw) => {
+  const s = safeText(raw).split(" ")[0].split("T")[0].replace(/\//g, "-");
+  const p = s.split("-");
+  if (p.length === 3 && p[0].length === 4) {
+    return `${p[0]}-${p[1].padStart(2, "0")}-${p[2].padStart(2, "0")}`;
+  }
+  return s || "1970-01-01";
+};
 const jp = (s, f) => {
   try {
     return JSON.parse(s);
@@ -183,7 +171,10 @@ const gl = (k, f) => {
 const sl_s = (k, v) => {
   try {
     window.localStorage.setItem(k, JSON.stringify(v));
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 };
 const gcid = () => {
   const K = "upc_client_id_v1",
@@ -269,12 +260,10 @@ const CSS = `
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:var(--s4);border-radius:99px;}
 @keyframes fadeUp{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:translateY(0);}}
-@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
 @keyframes spin{to{transform:rotate(360deg);}}
 @keyframes notifIn{from{opacity:0;transform:translate(-50%,-10px);}to{opacity:1;transform:translate(-50%,0);}}
 @keyframes toastIn{from{opacity:0;transform:translateX(100%);}to{opacity:1;transform:translateX(0);}}
 @keyframes toastOut{from{opacity:1;}to{opacity:0;transform:translateX(100%);}}
-@keyframes timerBar{from{width:100%;}to{width:0%;}}
 .spin{animation:spin 1s linear infinite;}
 .f0{animation:fadeUp .42s cubic-bezier(.16,1,.3,1) both;}
 .f1{animation:fadeUp .42s cubic-bezier(.16,1,.3,1) .06s both;}
@@ -285,21 +274,31 @@ const CSS = `
 .gm{display:grid;grid-template-columns:240px 1fr;gap:20px;align-items:start;}
 .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
 .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
-.g2{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;}
 @media(max-width:900px){.gm{grid-template-columns:1fr;}}
 @media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr);}.g3{grid-template-columns:repeat(2,1fr);}}
-@media(max-width:600px){.g4,.g3,.g2{grid-template-columns:1fr;}}
+@media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}}
+.gcmp{display:grid;grid-template-columns:1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
+.gcmp-l{padding:0 20px 0 0;min-width:0;}
+.gcmp-r{padding:0 0 0 20px;min-width:0;}
+.gcmp-div{background:var(--s3);margin:0 20px;}
+@media(max-width:700px){.gcmp{grid-template-columns:1fr;gap:20px;}.gcmp-div{display:none;}.gcmp-l,.gcmp-r{padding:0;}}
+.hero-num{font-size:clamp(40px,8vw,72px);}
+.hero-num-md{font-size:clamp(36px,7vw,64px);}
+.hero-pct{font-size:clamp(30px,5.5vw,48px);}
+.hero-pct-md{font-size:clamp(28px,5vw,44px);}
 input,select,button{font-family:'Inter','Noto Sans TC',sans-serif;}
 button{cursor:pointer;transition:all .12s;}
 button:hover{filter:brightness(1.06);}
 button:active{transform:scale(.97);}
 tr{transition:background .1s;}
 tr:hover td{background:var(--s2)!important;}
+tr.rw:hover td{background:var(--wn-dim)!important;}
+tr.rl:hover td{background:var(--row-loss)!important;}
 .rw td{background:var(--wn-dim)!important;}
-.rl{background:var(--row-loss)!important;}
+.rl td{background:var(--row-loss)!important;}
 .iw{border-color:var(--wn)!important;}
 .iok{border-color:var(--up-bdr)!important;}
-.chart-tip{background:var(--s2)!important;border:1px solid var(--s3)!important;border-radius:10px!important;padding:12px 16px!important;}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;}}
 `;
 
 /* ─── Small UI Components ──────────────────────────────────────── */
@@ -363,6 +362,7 @@ const SyncDot = ({ status, last }) => {
     : "—";
   return (
     <div
+      role="status"
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -467,7 +467,7 @@ const Btn = ({ children, v = "default", style: st = {}, ...p }) => {
   );
 };
 
-const Lbl = ({ children, tip }) => (
+const Lbl = ({ children }) => (
   <div
     style={{
       fontSize: 12,
@@ -484,7 +484,21 @@ const SortTh = ({ children, sortKey, currentSort, onSort, align = "left" }) => {
   const isActive = currentSort.key === sortKey;
   const dir = isActive ? currentSort.dir : null;
   return (
-    <th onClick={() => onSort(sortKey)} style={{ ...th, textAlign: align }}>
+    <th
+      scope="col"
+      tabIndex={0}
+      aria-sort={
+        isActive ? (dir === "asc" ? "ascending" : "descending") : "none"
+      }
+      onClick={() => onSort(sortKey)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSort(sortKey);
+        }
+      }}
+      style={{ ...th, textAlign: align }}
+    >
       <div
         style={{
           display: "flex",
@@ -508,69 +522,47 @@ const SortTh = ({ children, sortKey, currentSort, onSort, align = "left" }) => {
   );
 };
 
-/* ─── Chart Tooltip ──────────────────────────────────────────── */
-const ChartTip = ({ active, payload, label }) => {
-  if (!active || !payload?.length) return null;
+/* 成本輸入框：本地草稿、失焦才寫回，避免每個按鍵觸發全表重算與雲端寫入 */
+const CostInput = React.memo(function CostInput({
+  costKey,
+  label,
+  value,
+  miss,
+  onCommit,
+}) {
+  const norm = (v) =>
+    v === undefined || v === null || v === "" || Number(v) === 0
+      ? ""
+      : String(v);
+  const [draft, setDraft] = useState(() => norm(value));
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setDraft(norm(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
   return (
-    <div
-      style={{
-        background: "var(--s1)",
-        border: "1px solid var(--s3)",
-        borderRadius: 10,
-        padding: "10px 14px",
-        boxShadow: "0 4px 20px rgba(0,0,0,0.12)",
+    <input
+      type="number"
+      value={draft}
+      placeholder="—"
+      aria-label={label}
+      onFocus={() => {
+        focused.current = true;
       }}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 700,
-          color: "var(--t3)",
-          marginBottom: 6,
-          fontFamily: mono,
-        }}
-      >
-        {label}
-      </div>
-      {payload.map((e, i) => (
-        <div
-          key={i}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "2px 0",
-          }}
-        >
-          <div
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 2,
-              background: e.color,
-            }}
-          />
-          <span style={{ fontSize: 11, color: "var(--t2)", fontWeight: 600 }}>
-            {e.name}
-          </span>
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 800,
-              color: "var(--t1)",
-              fontFamily: mono,
-              marginLeft: "auto",
-            }}
-          >
-            {typeof e.value === "number" && Math.abs(e.value) >= 1
-              ? fmt$(e.value)
-              : fmtP(e.value)}
-          </span>
-        </div>
-      ))}
-    </div>
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        focused.current = false;
+        const n = parseFloat(draft);
+        onCommit(costKey, Number.isFinite(n) ? n : 0);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
+      className={miss ? "iw" : Number(value) > 0 ? "iok" : ""}
+      style={{ ...inp, width: 80 }}
+    />
   );
-};
+});
 
 /* ─── Overview Dashboard ────────────────────────────────────── */
 function OverviewDashboard({
@@ -587,15 +579,6 @@ function OverviewDashboard({
 }) {
   const slD = slData?.summary;
   const spS = spData?.s;
-  const mono = "'JetBrains Mono',monospace";
-  const fmt$ = (v) =>
-    new Intl.NumberFormat("zh-TW", {
-      style: "currency",
-      currency: "TWD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(v || 0));
-  const fmtP = (v) => `${((Number(v) || 0) * 100).toFixed(2)}%`;
   const isDark = theme === "dark";
   const greenC = isDark ? "#2ECC71" : "#1A6B3C";
   const spC = isDark ? "#FF6533" : "#EE4D2D";
@@ -607,13 +590,6 @@ function OverviewDashboard({
   const totalNetMargin = totalRev > 0 ? totalNet / totalRev : 0;
   const slRevShare = totalRev > 0 ? (slD?.rev || 0) / totalRev : 0;
   const spRevShare = totalRev > 0 ? (spS?.tG || 0) / totalRev : 0;
-
-  const prevTotalRev =
-    (slData?.prevMonth?.rev || 0) + (spData?.prevMonth?.rev || 0);
-  const prevTotalNet =
-    (slData?.prevMonth?.net || 0) + (spData?.prevMonth?.net || 0);
-  const prevTotalMargin = prevTotalRev > 0 ? prevTotalNet / prevTotalRev : null;
-  const hasPrev = prevTotalRev > 0;
 
   const periodLabel =
     sY === "All" ? "歷年" : sM === "All" ? `${sY}年` : `${sY}/${sM}`;
@@ -674,6 +650,7 @@ function OverviewDashboard({
     return list;
   }, [slD, spS, slData, spData, slCosts, spCosts]);
 
+  /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響 */
   const trendData = useMemo(() => {
     const byMonth = {};
     Object.values(slOrders || {}).forEach((o) => {
@@ -681,7 +658,6 @@ function OverviewDashboard({
         (o.status || "").includes("取消") || (o.status || "").includes("刪除");
       if (cx) return;
       if (sY && sY !== "All" && !String(o.date).startsWith(sY)) return;
-      if (sM && sM !== "All" && String(o.date).substring(5, 7) !== sM) return;
       const ym = String(o.date || "").substring(0, 7);
       if (!ym || ym.length < 7) return;
       if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0 };
@@ -697,7 +673,6 @@ function OverviewDashboard({
         (st.includes("退貨") && !st.includes("已完成"));
       if (bad) return;
       if (sY && sY !== "All" && !String(o.date).startsWith(sY)) return;
-      if (sM && sM !== "All" && String(o.date).substring(5, 7) !== sM) return;
       const ym = String(o.date || "").substring(0, 7);
       if (!ym || ym.length < 7) return;
       if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0 };
@@ -712,7 +687,7 @@ function OverviewDashboard({
         label: d.month.substring(2).replace("-", "/"),
         total: d.slRev + d.spRev,
       }));
-  }, [slOrders, spOrders, sY, sM]);
+  }, [slOrders, spOrders, sY]);
 
   const crossProductRank = useMemo(() => {
     const map = {};
@@ -728,7 +703,7 @@ function OverviewDashboard({
       .filter((p) => p.slQty + p.spQty > 0)
       .sort((a, b) => b.slQty + b.spQty - (a.slQty + a.spQty))
       .slice(0, 8);
-  }, [slData, spData, slCosts, spCosts]);
+  }, [slData, spData]);
 
   if (!hasAny) {
     return (
@@ -847,8 +822,8 @@ function OverviewDashboard({
                 合計淨利
               </div>
               <div
+                className="hero-num-md"
                 style={{
-                  fontSize: 64,
                   lineHeight: 1,
                   fontWeight: 700,
                   letterSpacing: "-0.04em",
@@ -874,8 +849,8 @@ function OverviewDashboard({
                 綜合淨利率
               </div>
               <div
+                className="hero-pct-md"
                 style={{
-                  fontSize: 44,
                   fontWeight: 700,
                   fontFamily: mono,
                   lineHeight: 1,
@@ -884,8 +859,6 @@ function OverviewDashboard({
                       ? "var(--up)"
                       : totalNetMargin >= 0.11
                       ? "var(--wn)"
-                      : totalNetMargin > 0
-                      ? "var(--dn)"
                       : "var(--dn)",
                 }}
               >
@@ -966,14 +939,7 @@ function OverviewDashboard({
             </div>
           </div>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1px 1fr",
-              borderTop: "1px solid var(--s3)",
-              paddingTop: 20,
-            }}
-          >
+          <div className="gcmp">
             {[
               {
                 label: "官網",
@@ -997,10 +963,8 @@ function OverviewDashboard({
               },
             ].map((p, i) => (
               <React.Fragment key={p.id}>
-                {i === 1 && (
-                  <div style={{ background: "var(--s3)", margin: "0 20px" }} />
-                )}
-                <div style={{ padding: i === 0 ? "0 20px 0 0" : "0 0 0 20px" }}>
+                {i === 1 && <div className="gcmp-div" />}
+                <div className={i === 0 ? "gcmp-l" : "gcmp-r"}>
                   <div
                     style={{
                       display: "flex",
@@ -1296,12 +1260,6 @@ function OverviewDashboard({
                 content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
                   const total = payload.reduce((s, e) => s + (e.value || 0), 0);
-                  const fmt = (v) =>
-                    new Intl.NumberFormat("zh-TW", {
-                      style: "currency",
-                      currency: "TWD",
-                      minimumFractionDigits: 0,
-                    }).format(v);
                   return (
                     <div
                       style={{
@@ -1383,7 +1341,7 @@ function OverviewDashboard({
                                 flex: 1,
                               }}
                             >
-                              {fmt(e.value)}
+                              {fmt$(e.value)}
                             </span>
                           </div>
                         );
@@ -1415,7 +1373,7 @@ function OverviewDashboard({
                             color: "var(--t1)",
                           }}
                         >
-                          {fmt(total)}
+                          {fmt$(total)}
                         </span>
                       </div>
                     </div>
@@ -1444,15 +1402,6 @@ function OverviewDashboard({
           </ResponsiveContainer>
         </div>
       )}
-
-      {/* ── AI 財務顧問 ── */}
-      <AIAdvisor
-        slData={slData}
-        spData={spData}
-        sY={sY}
-        sM={sM}
-        theme={theme}
-      />
 
       {/* ── 跨平台商品排行 ── */}
       {crossProductRank.length > 0 && (
@@ -1578,478 +1527,6 @@ function OverviewDashboard({
   );
 }
 
-/* ─── AI 財務顧問 ──────────────────────────────────────────── */
-function AIAdvisor({ slData, spData, sY, sM, theme }) {
-  const [apiKey, setApiKey] = React.useState(() => {
-    try {
-      return window.localStorage.getItem("bestea_anthropic_key") || "";
-    } catch {
-      return "";
-    }
-  });
-  const [showKeyInput, setShowKeyInput] = React.useState(false);
-  const [input, setInput] = React.useState("");
-  const [messages, setMessages] = React.useState([]);
-  const [loading, setLoading] = React.useState(false);
-  const [keyDraft, setKeyDraft] = React.useState("");
-  const bottomRef = React.useRef(null);
-  const mono = "'JetBrains Mono',monospace";
-
-  const isDark = theme === "dark";
-  const accentC = isDark ? "#2ECC71" : "#1A6B3C";
-
-  const fmt$ = (v) =>
-    new Intl.NumberFormat("zh-TW", {
-      style: "currency",
-      currency: "TWD",
-      minimumFractionDigits: 0,
-    }).format(Number(v || 0));
-  const fmtP = (v) => `${((Number(v) || 0) * 100).toFixed(2)}%`;
-
-  const buildContext = () => {
-    const slD = slData?.summary;
-    const spS = spData?.s;
-    const period =
-      sY === "All" ? "歷年" : sM === "All" ? `${sY}年` : `${sY}/${sM}`;
-    const lines = [
-      `你是 BESTEA 天下第一好茶的財務顧問，以下是 ${period} 的跨平台經營數據：`,
-      "",
-      "【官網 Shopline】",
-      slD
-        ? [
-            `  營收：${fmt$(slD.rev)}`,
-            `  淨利：${fmt$(slD.net)}`,
-            `  淨利率：${fmtP(slD.trueNetMargin)}（目標 ${fmtP(
-              slD.targetNetRate
-            )}）`,
-            `  有效訂單：${slD.valid} 筆`,
-            `  商品毛利率：${fmtP(slD.grossMargin)}`,
-            `  通路總成本佔比：${fmtP(slD.realCommissionRate)}`,
-            `  營收折讓率：${fmtP(slD.voucherRate)}`,
-          ].join("\n")
-        : "  無資料",
-      "",
-      "【蝦皮】",
-      spS
-        ? [
-            `  營收：${fmt$(spS.tG)}`,
-            `  淨利（扣分潤）：${fmt$(spS.afterComm)}`,
-            `  淨利率：${fmtP(spS.netMargin)}（目標 ${fmtP(spS.targetNet)}）`,
-            `  有效訂單：${spS.validN} 筆`,
-            `  商品毛利率：${fmtP(
-              spS.tG > 0 ? (spS.tG - spS.tC) / spS.tG : 0
-            )}`,
-            `  真實抽成率：${fmtP(spS.feeRate)}`,
-            `  優惠券發放率：${fmtP(spS.voucherRate)}`,
-            spS.comm > 0 ? `  分潤費用：${fmt$(spS.comm)}` : "",
-          ]
-            .filter(Boolean)
-            .join("\n")
-        : "  無資料",
-      "",
-      "請根據以上數據，用繁體中文簡潔回答使用者的問題。分析要具體、直接，提供可執行的建議。",
-    ];
-    return lines.join("\n");
-  };
-
-  const saveKey = () => {
-    const k = keyDraft.trim();
-    if (!k.startsWith("sk-ant-")) {
-      alert("請輸入正確的 Anthropic API Key（以 sk-ant- 開頭）");
-      return;
-    }
-    try {
-      window.localStorage.setItem("bestea_anthropic_key", k);
-    } catch {}
-    setApiKey(k);
-    setShowKeyInput(false);
-    setKeyDraft("");
-  };
-
-  const send = async () => {
-    if (!input.trim() || loading) return;
-    if (!apiKey) {
-      setShowKeyInput(true);
-      return;
-    }
-    const userMsg = { role: "user", content: input.trim() };
-    const newMsgs = [...messages, userMsg];
-    setMessages(newMsgs);
-    setInput("");
-    setLoading(true);
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-5",
-          max_tokens: 1024,
-          system: buildContext(),
-          messages: newMsgs,
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error?.message || "API 錯誤");
-      }
-      const data = await res.json();
-      const reply = data.content?.[0]?.text || "（無回應）";
-      setMessages((p) => [...p, { role: "assistant", content: reply }]);
-    } catch (e) {
-      setMessages((p) => [
-        ...p,
-        { role: "assistant", content: `⚠️ 錯誤：${e.message}` },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  React.useEffect(() => {
-    if (bottomRef.current) {
-      const container = bottomRef.current.closest("[data-chat-scroll]");
-      if (container) container.scrollTop = container.scrollHeight;
-    }
-  }, [messages, loading]);
-
-  const quickPrompts = [
-    "這期整體表現如何？有哪些警訊？",
-    "哪個平台利潤率更好？原因是什麼？",
-    "下個月我應該重點優化什麼？",
-    "通路費用是否過高？如何改善？",
-  ];
-
-  return (
-    <div
-      className="f5"
-      style={{
-        background: "var(--s1)",
-        border: "1px solid var(--s3)",
-        borderRadius: 16,
-        overflow: "hidden",
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          padding: "16px 24px",
-          borderBottom: "1px solid var(--s3)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              background: "var(--s2)",
-              border: "1px solid var(--s3)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 14,
-            }}
-          >
-            ✦
-          </div>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)" }}>
-              AI 財務顧問
-            </div>
-            <div style={{ fontSize: 10, color: "var(--t3)" }}>
-              基於本期數據 · Claude Sonnet
-            </div>
-          </div>
-        </div>
-        <button
-          onClick={() => setShowKeyInput(!showKeyInput)}
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            color: apiKey ? "var(--up)" : "var(--wn)",
-            background: apiKey ? "var(--up-dim)" : "var(--wn-dim)",
-            border: `1px solid ${apiKey ? "var(--up-bdr)" : "var(--wn-bdr)"}`,
-            borderRadius: 6,
-            padding: "4px 12px",
-            cursor: "pointer",
-          }}
-        >
-          {apiKey ? "✓ 已設定 API Key" : "⚠ 設定 API Key"}
-        </button>
-      </div>
-
-      {/* API Key input */}
-      {showKeyInput && (
-        <div
-          style={{
-            padding: "14px 24px",
-            background: "var(--s2)",
-            borderBottom: "1px solid var(--s3)",
-            display: "flex",
-            gap: 8,
-            alignItems: "center",
-            flexWrap: "wrap",
-          }}
-        >
-          <input
-            type="password"
-            placeholder="sk-ant-api03-..."
-            value={keyDraft}
-            onChange={(e) => setKeyDraft(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && saveKey()}
-            style={{
-              flex: 1,
-              minWidth: 200,
-              border: "1px solid var(--s3)",
-              borderRadius: 8,
-              padding: "8px 12px",
-              fontSize: 12,
-              fontFamily: mono,
-              background: "var(--s1)",
-              color: "var(--t1)",
-              outline: "none",
-            }}
-          />
-          <button
-            onClick={saveKey}
-            style={{
-              background: accentC,
-              color: "#fff",
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 16px",
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            儲存
-          </button>
-          {apiKey && (
-            <button
-              onClick={() => {
-                setApiKey("");
-                try {
-                  window.localStorage.removeItem("bestea_anthropic_key");
-                } catch {}
-                setShowKeyInput(false);
-              }}
-              style={{
-                background: "var(--dn-dim)",
-                color: "var(--dn)",
-                border: "1px solid var(--dn-bdr)",
-                borderRadius: 8,
-                padding: "8px 12px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              清除
-            </button>
-          )}
-          <div style={{ fontSize: 10, color: "var(--t3)", width: "100%" }}>
-            Key 僅存在瀏覽器 localStorage，不會上傳任何伺服器
-          </div>
-        </div>
-      )}
-
-      {/* Messages */}
-      <div
-        style={{
-          height: 280,
-          overflowY: "auto",
-          padding: "16px 24px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-        }}
-      >
-        {messages.length === 0 && (
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "center",
-              gap: 12,
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: "var(--t3)",
-                textAlign: "center",
-                marginBottom: 8,
-              }}
-            >
-              快速提問
-            </div>
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 8,
-                justifyContent: "center",
-              }}
-            >
-              {quickPrompts.map((q, i) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    setInput(q);
-                  }}
-                  style={{
-                    fontSize: 11,
-                    color: "var(--t2)",
-                    background: "var(--s2)",
-                    border: "1px solid var(--s3)",
-                    borderRadius: 20,
-                    padding: "6px 14px",
-                    cursor: "pointer",
-                    transition: "all .15s",
-                  }}
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              justifyContent: m.role === "user" ? "flex-end" : "flex-start",
-            }}
-          >
-            <div
-              style={{
-                maxWidth: "82%",
-                padding: "10px 14px",
-                borderRadius:
-                  m.role === "user"
-                    ? "12px 12px 2px 12px"
-                    : "12px 12px 12px 2px",
-                background: m.role === "user" ? accentC : "var(--s2)",
-                color: m.role === "user" ? "#fff" : "var(--t1)",
-                fontSize: 12,
-                fontWeight: 500,
-                lineHeight: 1.7,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {m.content}
-            </div>
-          </div>
-        ))}
-        {loading && (
-          <div style={{ display: "flex", justifyContent: "flex-start" }}>
-            <div
-              style={{
-                padding: "10px 16px",
-                borderRadius: "12px 12px 12px 2px",
-                background: "var(--s2)",
-                display: "flex",
-                gap: 4,
-                alignItems: "center",
-              }}
-            >
-              {[0, 1, 2].map((i) => (
-                <div
-                  key={i}
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background: accentC,
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Input */}
-      <div
-        style={{
-          padding: "12px 24px",
-          borderTop: "1px solid var(--s3)",
-          display: "flex",
-          gap: 8,
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
-          placeholder={
-            apiKey
-              ? "輸入問題，例如：這個月為什麼利潤下降？"
-              : "請先設定 API Key"
-          }
-          disabled={!apiKey || loading}
-          style={{
-            flex: 1,
-            border: "1px solid var(--s3)",
-            borderRadius: 10,
-            padding: "10px 14px",
-            fontSize: 12,
-            background: "var(--s2)",
-            color: "var(--t1)",
-            outline: "none",
-            fontFamily: "'Inter','Noto Sans TC',sans-serif",
-          }}
-        />
-        <button
-          onClick={send}
-          disabled={!input.trim() || loading || !apiKey}
-          style={{
-            background: accentC,
-            color: "#fff",
-            border: "none",
-            borderRadius: 10,
-            padding: "10px 18px",
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
-            opacity: !input.trim() || loading || !apiKey ? 0.4 : 1,
-            transition: "opacity .15s",
-          }}
-        >
-          送出
-        </button>
-        {messages.length > 0 && (
-          <button
-            onClick={() => setMessages([])}
-            style={{
-              background: "var(--s2)",
-              color: "var(--t3)",
-              border: "1px solid var(--s3)",
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontSize: 11,
-              cursor: "pointer",
-            }}
-          >
-            清除
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /* ─── Commission Panel ──────────────────────────────────────── */
 function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
   const key = commKey(selYear, selMonth);
@@ -2091,12 +1568,6 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
       : selMonth === "All"
       ? `${selYear}`
       : `${selYear}/${selMonth}`;
-  const fmt$ = (v) =>
-    new Intl.NumberFormat("zh-TW", {
-      style: "currency",
-      currency: "TWD",
-      minimumFractionDigits: 0,
-    }).format(Number(v || 0));
 
   return (
     <div
@@ -2148,6 +1619,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
               setLocal("");
               onUpdate(key, "");
             }}
+            aria-label="清除此期間分潤金額"
             style={{
               border: "none",
               background: "none",
@@ -2207,6 +1679,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
             min="0"
             value={local}
             placeholder="0"
+            aria-label="此期間分潤費用"
             onChange={(e) => setLocal(e.target.value)}
             onFocus={() => setFocused(true)}
             onBlur={handleBlur}
@@ -2273,40 +1746,15 @@ export default function App() {
   const migrating = useRef(false);
   const applying = useRef(false);
   const sTimer = useRef(null);
-  const lR = useRef(0);
+  /* 遠端時間戳分開追蹤：meta / 官網月份 / 蝦皮月份 互不干擾 */
+  const lRMeta = useRef(0);
+  const lRSl = useRef(0);
+  const lRSp = useRef(0);
   const lL = useRef(0);
   const meta = useRef({
     clientId: typeof window !== "undefined" ? gcid() : "",
   });
   const [lastSyncAt, setLastSyncAt] = useState(0);
-
-  useEffect(() => {
-    sl_s(SK.theme, theme);
-  }, [theme]);
-  useEffect(() => {
-    sl_s(SK.platform, platform);
-  }, [platform]);
-  useEffect(() => {
-    sl_s(SK.slFp, slFp);
-  }, [slFp]);
-  useEffect(() => {
-    sl_s(SK.spFp, spFp);
-  }, [spFp]);
-  useEffect(() => {
-    sl_s(SK.slCosts, slCosts);
-  }, [slCosts]);
-  useEffect(() => {
-    sl_s(SK.spCosts, spCosts);
-  }, [spCosts]);
-  useEffect(() => {
-    sl_s(SK.slOrders, slOrders);
-  }, [slOrders]);
-  useEffect(() => {
-    sl_s(SK.spOrders, spOrders);
-  }, [spOrders]);
-  useEffect(() => {
-    sl_s(SK.commissions, commissions);
-  }, [commissions]);
 
   const toast = useCallback((msg, opts = {}) => {
     const id = ++toastIdRef.current;
@@ -2330,6 +1778,49 @@ export default function App() {
     );
     setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 350);
   }, []);
+
+  /* localStorage 寫入失敗（容量滿）時提醒一次，避免無聲遺失本地快取 */
+  const storageWarned = useRef(false);
+  const persist = useCallback(
+    (k, v) => {
+      if (!sl_s(k, v) && !storageWarned.current) {
+        storageWarned.current = true;
+        toast("瀏覽器本地儲存空間不足，離線快取可能不完整（雲端同步不受影響）", {
+          type: "warning",
+          duration: 8000,
+        });
+      }
+    },
+    [toast]
+  );
+
+  useEffect(() => {
+    persist(SK.theme, theme);
+  }, [theme, persist]);
+  useEffect(() => {
+    persist(SK.platform, platform);
+  }, [platform, persist]);
+  useEffect(() => {
+    persist(SK.slFp, slFp);
+  }, [slFp, persist]);
+  useEffect(() => {
+    persist(SK.spFp, spFp);
+  }, [spFp, persist]);
+  useEffect(() => {
+    persist(SK.slCosts, slCosts);
+  }, [slCosts, persist]);
+  useEffect(() => {
+    persist(SK.spCosts, spCosts);
+  }, [spCosts, persist]);
+  useEffect(() => {
+    persist(SK.slOrders, slOrders);
+  }, [slOrders, persist]);
+  useEffect(() => {
+    persist(SK.spOrders, spOrders);
+  }, [spOrders, persist]);
+  useEffect(() => {
+    persist(SK.commissions, commissions);
+  }, [commissions, persist]);
 
   const msg = (m) => {
     setNotif(m);
@@ -2479,7 +1970,6 @@ export default function App() {
       }
     };
 
-
     // === LEGACY DATA RESTORE (manual via DevTools) ===
     // Usage in browser console:
     //   window.forceLegacyRestore()           -> inspect legacy docs only
@@ -2498,10 +1988,10 @@ export default function App() {
           }
           return raw.orders || null;
         };
-        const slOrders = parse(slOldRaw) || {};
-        const spOrders = parse(spOldRaw) || {};
-        const slCount = Object.keys(slOrders).length;
-        const spCount = Object.keys(spOrders).length;
+        const slLegacy = parse(slOldRaw) || {};
+        const spLegacy = parse(spOldRaw) || {};
+        const slCount = Object.keys(slLegacy).length;
+        const spCount = Object.keys(spLegacy).length;
         const sample = (obj) =>
           Object.entries(obj)
             .slice(0, 2)
@@ -2510,8 +2000,8 @@ export default function App() {
               vType: typeof v,
               vKeys: v && typeof v === "object" ? Object.keys(v).slice(0, 8) : null,
             }));
-        const slSample = sample(slOrders);
-        const spSample = sample(spOrders);
+        const slSample = sample(slLegacy);
+        const spSample = sample(spLegacy);
         console.log("[Restore] sl legacy count:", slCount, "sample:", slSample);
         console.log("[Restore] sp legacy count:", spCount, "sample:", spSample);
         if (mode !== "apply") {
@@ -2519,8 +2009,8 @@ export default function App() {
           return { slCount, spCount, slSample, spSample };
         }
         if (!window.confirm("Will write " + slCount + " SL + " + spCount + " SP orders into monthly collections. Proceed?")) return;
-        const slByMonth = groupOrdersByMonth(slOrders);
-        const spByMonth = groupOrdersByMonth(spOrders);
+        const slByMonth = groupOrdersByMonth(slLegacy);
+        const spByMonth = groupOrdersByMonth(spLegacy);
         const ms = Date.now();
         const writes = [];
         for (const [ym, orders] of Object.entries(slByMonth)) {
@@ -2542,8 +2032,8 @@ export default function App() {
           );
         }
         await Promise.all(writes);
-        setSlOrders(slOrders);
-        setSpOrders(spOrders);
+        setSlOrders(slLegacy);
+        setSpOrders(spLegacy);
         console.log("[Restore] DONE. Wrote", writes.length, "monthly docs.");
         return { wrote: writes.length, slCount, spCount };
       } catch (e) {
@@ -2552,6 +2042,7 @@ export default function App() {
       }
     };
     // === END LEGACY DATA RESTORE ===
+
     // meta 監聽
     const unMeta = onSnapshot(
       cDoc.current,
@@ -2559,14 +2050,14 @@ export default function App() {
         try {
           const metaData = parseMeta(snap);
           const rMs = Number(metaData?.updatedAtMs || 0);
-          if (metaData && rMs > lR.current && rMs > lL.current) {
+          if (metaData && rMs > lRMeta.current && rMs > lL.current) {
             applying.current = true;
             if (metaData.slFp) setSlFp(metaData.slFp);
             if (metaData.spFp) setSpFp(metaData.spFp);
             if (metaData.slCosts) setSlCosts(metaData.slCosts);
             if (metaData.spCosts) setSpCosts(metaData.spCosts);
             if (metaData.commissions) setCommissions(metaData.commissions);
-            lR.current = rMs;
+            lRMeta.current = rMs;
             lL.current = rMs;
             setLastSyncAt(Date.now());
             setTimeout(() => {
@@ -2608,11 +2099,14 @@ export default function App() {
             if (m > maxMs) maxMs = m;
             prevSlMonthlyHashes.current[docSnap.id] = d?.ordersJson || "";
           });
-          if (slFirstLoad || ((maxMs > lR.current && maxMs > lL.current) && !applying.current)) {
+          if (
+            slFirstLoad ||
+            (maxMs > lRSl.current && maxMs > lL.current && !applying.current)
+          ) {
             slFirstLoad = false;
-        applying.current = true;
+            applying.current = true;
             setSlOrders(all);
-            if (maxMs > lR.current) lR.current = maxMs;
+            if (maxMs > lRSl.current) lRSl.current = maxMs;
             setLastSyncAt(Date.now());
             setTimeout(() => {
               applying.current = false;
@@ -2644,11 +2138,14 @@ export default function App() {
             if (m > maxMs) maxMs = m;
             prevSpMonthlyHashes.current[docSnap.id] = d?.ordersJson || "";
           });
-          if (spFirstLoad || ((maxMs > lR.current && maxMs > lL.current) && !applying.current)) {
+          if (
+            spFirstLoad ||
+            (maxMs > lRSp.current && maxMs > lL.current && !applying.current)
+          ) {
             spFirstLoad = false;
-        applying.current = true;
+            applying.current = true;
             setSpOrders(all);
-            if (maxMs > lR.current) lR.current = maxMs;
+            if (maxMs > lRSp.current) lRSp.current = maxMs;
             setLastSyncAt(Date.now());
             setTimeout(() => {
               applying.current = false;
@@ -2833,33 +2330,30 @@ export default function App() {
       const cartId = im.cartId > -1 ? safeText(row[im.cartId]) : rawOrderId;
       const groupKey = cartId || rawOrderId;
 
-      const rawDate = safeText(row[im.date]);
-      const date = rawDate
-        ? rawDate.replace(/\//g, "-").split(" ")[0].split("T")[0]
-        : "1970-01-01";
+      const date = normDate(row[im.date]);
 
-      if (!newOrders[groupKey]) {
-        const revenue = numOrZero(
+      const rowRevenue = () =>
+        numOrZero(
           im.paidTotal > -1
             ? row[im.paidTotal]
             : im.total > -1
             ? row[im.total]
             : 0
         );
-        const voucherAmt =
-          numOrZero(im.discount > -1 ? row[im.discount] : 0) +
-          numOrZero(im.creditOffset > -1 ? row[im.creditOffset] : 0) +
-          numOrZero(im.pointOffset > -1 ? row[im.pointOffset] : 0);
+      const rowVoucher = () =>
+        numOrZero(im.discount > -1 ? row[im.discount] : 0) +
+        numOrZero(im.creditOffset > -1 ? row[im.creditOffset] : 0) +
+        numOrZero(im.pointOffset > -1 ? row[im.pointOffset] : 0);
+      const rowShipping = () =>
+        numOrZero(im.shippingFee > -1 ? row[im.shippingFee] : 0);
 
+      if (!newOrders[groupKey]) {
         const statusRaw = im.status > -1 ? safeText(row[im.status]) : "";
         const isTaxExempt =
           (im.taxExempt > -1 && safeText(row[im.taxExempt]) === "免稅") ||
           (im.invoiceStatus > -1 &&
             safeText(row[im.invoiceStatus]) === "待開立");
         const hasReturn = im.returnId > -1 && safeText(row[im.returnId]) !== "";
-        const shippingIncome = numOrZero(
-          im.shippingFee > -1 ? row[im.shippingFee] : 0
-        );
         const payMethod = im.payMethod > -1 ? safeText(row[im.payMethod]) : "";
         const delivMethod = im.delivery > -1 ? safeText(row[im.delivery]) : "";
 
@@ -2867,22 +2361,28 @@ export default function App() {
           orderId: rawOrderId,
           date,
           status: statusRaw,
-          revenue,
-          voucherAmount: voucherAmt,
-          shippingIncome,
+          revenue: rowRevenue(),
+          voucherAmount: rowVoucher(),
+          shippingIncome: rowShipping(),
           paymentMethod: payMethod,
           deliveryMethod: delivMethod,
           isTaxExempt,
           hasReturn,
           items: [],
+          _orderIds: [rawOrderId],
         };
         count++;
+      } else if (!newOrders[groupKey]._orderIds.includes(rawOrderId)) {
+        // 同一購物車內的另一張訂單：金額累加，避免只取第一張造成漏算
+        newOrders[groupKey]._orderIds.push(rawOrderId);
+        newOrders[groupKey].revenue += rowRevenue();
+        newOrders[groupKey].voucherAmount += rowVoucher();
+        newOrders[groupKey].shippingIncome += rowShipping();
       }
 
       const prodName =
         im.prodName > -1 ? safeText(row[im.prodName]) : "未知商品";
       const option = im.option > -1 ? safeText(row[im.option]) : "";
-      const prodId = im.prodId > -1 ? safeText(row[im.prodId]) : "";
       const qty = parseInt(im.qty > -1 ? row[im.qty] || 1 : 1, 10) || 1;
       const price = numOrZero(im.unitPrice > -1 ? row[im.unitPrice] : 0);
       const prodType = im.prodType > -1 ? safeText(row[im.prodType]) : "商品";
@@ -2907,23 +2407,22 @@ export default function App() {
 
     setSlOrders((p) => {
       const merged = { ...p };
-      Object.entries(newOrders).forEach(([gk, order]) => {
-        merged[order.orderId] = order;
+      Object.values(newOrders).forEach((order) => {
+        const { _orderIds, ...clean } = order;
+        merged[clean.orderId] = clean;
       });
-      const dates = Object.values(merged)
-        .map((o) => String(o.date))
-        .filter(Boolean)
-        .sort()
-        .reverse();
-      if (dates.length) {
-        const ly = dates[0].substring(0, 4);
-        const lm = dates[0].substring(5, 7);
-        setSY(ly);
-        setSM(lm);
-      }
-      toast(`已匯入 ${count} 筆官網訂單`, { type: "success" });
       return merged;
     });
+    const dates = Object.values(newOrders)
+      .map((o) => String(o.date))
+      .filter(Boolean)
+      .sort()
+      .reverse();
+    if (dates.length) {
+      setSY(dates[0].substring(0, 4));
+      setSM(dates[0].substring(5, 7));
+    }
+    toast(`已匯入 ${count} 筆官網訂單`, { type: "success" });
   };
 
   /* ─── Shopee CSV/XLSX Parser ────────────────────────────────── */
@@ -2976,9 +2475,7 @@ export default function App() {
       if (!row || row.length < 5) continue;
       const orderId = safeText(row[im.orderId]);
       if (!orderId) continue;
-      const date = (
-        safeText(row[im.date]).split(" ")[0] || "1970-01-01"
-      ).replace(/\//g, "-");
+      const date = normDate(row[im.date]);
 
       if (!newOrders[orderId]) {
         const rawGross =
@@ -3026,22 +2523,17 @@ export default function App() {
       });
     }
 
-    setSpOrders((p) => {
-      const m = { ...p, ...newOrders };
-      const dates = Object.values(m)
-        .map((o) => String(o.date))
-        .filter(Boolean)
-        .sort()
-        .reverse();
-      if (dates.length) {
-        const ly = dates[0].substring(0, 4);
-        const lm = dates[0].substring(5, 7);
-        setSY(ly);
-        setSM(lm);
-      }
-      toast(`已匯入 ${count} 筆蝦皮訂單`, { type: "success" });
-      return m;
-    });
+    setSpOrders((p) => ({ ...p, ...newOrders }));
+    const dates = Object.values(newOrders)
+      .map((o) => String(o.date))
+      .filter(Boolean)
+      .sort()
+      .reverse();
+    if (dates.length) {
+      setSY(dates[0].substring(0, 4));
+      setSM(dates[0].substring(5, 7));
+    }
+    toast(`已匯入 ${count} 筆蝦皮訂單`, { type: "success" });
   };
 
   const handleFile = (e) => {
@@ -3381,76 +2873,14 @@ export default function App() {
     const afterComm = tNetPro - comm;
     const netMargin = tG > 0 ? afterComm / tG : 0;
 
-    let spPrevM = null;
-    if (sM !== "All" && sY !== "All") {
-      const pmNum2 = Number(sM) - 1;
-      const pm2 = pmNum2 === 0 ? "12" : String(pmNum2).padStart(2, "0");
-      const py2 = pmNum2 === 0 ? String(Number(sY) - 1) : sY;
-      const prevKey = `${py2}-${pm2}`;
-      const prevSPOrders = all.filter((o) =>
-        String(o.date).startsWith(prevKey)
-      );
-      if (prevSPOrders.length > 0) {
-        let ptG = 0,
-          ptV = 0,
-          ptF = 0,
-          ptC = 0,
-          ptOp = 0,
-          ptTx = 0;
-        prevSPOrders.forEach((order) => {
-          const st2 = safeText(order.status),
-            rf2 = safeText(order.refundStatus);
-          if (st2.includes("不成立") || st2.includes("取消")) return;
-          if (rf2 !== "" || (st2.includes("退貨") && !st2.includes("已完成")))
-            return;
-          const g2 = numOrZero(order.grossPrice);
-          const fee2 = numOrZero(order.exactOrderFee);
-          const platformShipping2 = numOrZero(order.platformShippingFee);
-          const opEx2 = parseFloat(spFp.opExpense) || 0;
-          const tx2 = parseFloat(spFp.tax) || 0;
-          let oc3 = 0;
-          (order.items || []).forEach((item) => {
-            oc3 += (Number(spCosts[item.key]) || 0) * (item.qty || 1);
-          });
-          ptG += g2;
-          ptV += numOrZero(order.sellerVoucher);
-          ptF += fee2 + platformShipping2;
-          ptC += oc3;
-          ptOp += g2 * (opEx2 / 100);
-          const taxBase2 = numOrZero(order.buyerTotal) || g2;
-          ptTx += taxBase2 * (tx2 / 100);
-        });
-        const ptNet = ptG - ptV - ptF - ptC - ptOp - ptTx;
-        spPrevM = {
-          rev: ptG,
-          net: ptNet,
-          netMargin: ptG > 0 ? ptNet / ptG : 0,
-          grossMargin: ptG > 0 ? (ptG - ptC) / ptG : 0,
-          voucherRate: ptG > 0 ? ptV / ptG : 0,
-          feeRate: ptG > 0 ? ptF / ptG : 0,
-          channelMargin: ptG > 0 ? (ptG - ptC - ptF - ptV) / ptG : 0,
-        };
-      }
-    }
     let badge = { label: "虧損", color: "var(--dn)" };
-    let conclusion = "出現虧損，請立即檢視定價與費用。";
     if (netMargin >= targetNet) {
       badge = { label: "優秀", color: "var(--up)" };
-      conclusion = `淨利率 ${fmtP(netMargin)} 超越 ${fmtP(targetNet)} 目標。`;
     } else if (netMargin >= targetNet * 0.6) {
       badge = { label: "穩健", color: "var(--orange)" };
-      conclusion = `淨利率 ${fmtP(netMargin)}，距高標差 ${(
-        (targetNet - netMargin) *
-        100
-      ).toFixed(1)}%。`;
     } else if (netMargin > 0) {
       badge = { label: "偏弱", color: "var(--wn)" };
-      conclusion = `淨利率僅 ${fmtP(netMargin)}，建議優化。`;
     }
-    const top = Object.values(prods).reduce(
-      (m, o) => (o.estProfit > m.estProfit ? o : m),
-      { estProfit: -Infinity, name: "—" }
-    );
     return {
       years,
       months,
@@ -3458,7 +2888,6 @@ export default function App() {
       uniqueProducts: Object.values(prods).sort(
         (a, b) => b.soldQty - a.soldQty
       ),
-      prevMonth: spPrevM,
       s: {
         tG,
         tV,
@@ -3474,9 +2903,6 @@ export default function App() {
         validN,
         lossN,
         badge,
-        conclusion,
-        top,
-        topProfit: top.estProfit,
         avgAOV: validN > 0 ? tG / validN : 0,
         avgNetPer: validN > 0 ? afterComm / validN : 0,
         grossMargin: tG > 0 ? (tG - tF - tV - tC) / tG : 0,
@@ -3514,14 +2940,12 @@ export default function App() {
       : []
     : (isSL ? slData : spData)?.months || [];
 
-  const autoJumpedRef = useRef(false);
-  useEffect(() => {
-    if (!autoJumpedRef.current) setSM("All");
-  }, [sY]);
   useEffect(() => {
     setPage(0);
   }, [lossOnly, search, orderSort, sY, sM, platform]);
 
+  /* 首次載入資料時自動跳到最新月份（僅一次；手動切換年份會重設月份） */
+  const autoJumpedRef = useRef(false);
   useEffect(() => {
     if (autoJumpedRef.current) return;
     const slVals = Object.values(slOrders);
@@ -3536,12 +2960,8 @@ export default function App() {
       .reverse();
     if (!dates.length) return;
     autoJumpedRef.current = true;
-    const ly = dates[0].substring(0, 4);
-    const lm = dates[0].substring(5, 7);
-    setSY(ly);
-    setTimeout(() => {
-      setSM(lm);
-    }, 0);
+    setSY(dates[0].substring(0, 4));
+    setSM(dates[0].substring(5, 7));
   }, [slOrders, spOrders]);
 
   const matrixList = useMemo(() => {
@@ -3572,7 +2992,7 @@ export default function App() {
           );
         return 0;
       });
-  }, [isSL, slData, spData, mSearch, costSort, slCosts, spCosts]);
+  }, [isSL, slData, spData, mSearch, costSort, costs]);
 
   const missCost = useMemo(() => {
     const miss = matrixList.filter((p) => {
@@ -3584,18 +3004,18 @@ export default function App() {
       n: miss.length,
       keys: new Set(miss.map((p) => p.key)),
     };
-  }, [matrixList, slCosts, spCosts]);
+  }, [matrixList, costs]);
 
   const filteredOrders = useMemo(() => {
     if (!currentData) return [];
-    const list = isSL ? currentData.orderList : currentData.orderList;
+    const list = currentData.orderList;
     return list
       .filter((o) => {
         if (lossOnly && (isSL ? o.net >= 0 : o.finalNetProfit >= 0))
           return false;
         if (search) {
           const t = search.toLowerCase();
-          const oid = String(isSL ? o.orderId : o.orderId).toLowerCase();
+          const oid = String(o.orderId).toLowerCase();
           if (
             !oid.includes(t) &&
             !(o.items || []).some((i) =>
@@ -3743,6 +3163,14 @@ export default function App() {
       return { ...prev, [key]: Number(value) };
     });
 
+  const commitCost = useCallback(
+    (key, n) => {
+      const setter = isSL ? setSlCosts : setSpCosts;
+      setter((pr) => ({ ...pr, [key]: n }));
+    },
+    [isSL]
+  );
+
   /* ── 未填成本跳轉 helper ── */
   const jumpToFirstMissCost = () => {
     setTimeout(() => {
@@ -3783,6 +3211,7 @@ export default function App() {
       {/* Notification */}
       {notif && (
         <div
+          role="status"
           style={{
             position: "fixed",
             top: 12,
@@ -3894,29 +3323,9 @@ export default function App() {
                   key={p.id}
                   onClick={() => {
                     setPlatform(p.id);
-                    if (p.id === "shopline") {
-                      const allOrders = Object.values(slOrders);
-                      if (allOrders.length) {
-                        const ly = allOrders
-                          .map((o) => o.date.substring(0, 4))
-                          .filter(Boolean)
-                          .sort()
-                          .reverse()[0];
-                        const lm =
-                          allOrders
-                            .filter((o) => o.date.startsWith(ly))
-                            .map((o) => o.date.substring(5, 7))
-                            .filter(Boolean)
-                            .sort()
-                            .reverse()[0] || "All";
-                        setSY(ly);
-                        setSM(lm);
-                      } else {
-                        setSY("All");
-                        setSM("All");
-                      }
-                    } else if (p.id === "shopee") {
-                      const allOrders = Object.values(spOrders);
+                    const src = p.id === "shopline" ? slOrders : spOrders;
+                    if (p.id === "shopline" || p.id === "shopee") {
+                      const allOrders = Object.values(src);
                       if (allOrders.length) {
                         const ly = allOrders
                           .map((o) => String(o.date).substring(0, 4))
@@ -3961,6 +3370,9 @@ export default function App() {
             <SyncDot status={sync} last={lastSyncAt} />
             <button
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+              aria-label={
+                theme === "dark" ? "切換為淺色主題" : "切換為深色主題"
+              }
               style={{
                 width: 32,
                 height: 32,
@@ -3977,7 +3389,11 @@ export default function App() {
             </button>
             <select
               value={sY}
-              onChange={(e) => setSY(e.target.value)}
+              onChange={(e) => {
+                setSY(e.target.value);
+                setSM("All");
+              }}
+              aria-label="選擇年份"
               style={sel}
             >
               <option value="All">歷年數據</option>
@@ -3990,6 +3406,7 @@ export default function App() {
             <select
               value={sM}
               onChange={(e) => setSM(e.target.value)}
+              aria-label="選擇月份"
               style={sel}
             >
               <option value="All">全月份</option>
@@ -4027,7 +3444,16 @@ export default function App() {
             >
               {/* Upload */}
               <div
+                role="button"
+                tabIndex={0}
+                aria-label={`匯入${isSL ? "官網" : "蝦皮"}報表檔案`}
                 onClick={() => fRef.current._fileInput?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    fRef.current._fileInput?.click();
+                  }
+                }}
                 style={{
                   border: "1.5px dashed var(--s4)",
                   borderRadius: 12,
@@ -4129,6 +3555,7 @@ export default function App() {
                       <input
                         type="number"
                         step="0.1"
+                        aria-label={`${item.l}（%）`}
                         value={isSL ? slFp[item.n] : spFp[item.n]}
                         onChange={(e) =>
                           isSL
@@ -4356,8 +3783,8 @@ export default function App() {
                             最終結算淨利 · NET PROFIT
                           </div>
                           <div
+                            className="hero-num"
                             style={{
-                              fontSize: 72,
                               lineHeight: 1,
                               fontWeight: 700,
                               letterSpacing: "-0.04em",
@@ -4389,8 +3816,8 @@ export default function App() {
                             淨利率
                           </div>
                           <div
+                            className="hero-pct"
                             style={{
-                              fontSize: 48,
                               fontWeight: 700,
                               fontFamily: mono,
                               lineHeight: 1,
@@ -4804,8 +4231,8 @@ export default function App() {
                             最終結算淨利 · NET PROFIT
                           </div>
                           <div
+                            className="hero-num"
                             style={{
-                              fontSize: 72,
                               lineHeight: 1,
                               fontWeight: 700,
                               letterSpacing: "-0.04em",
@@ -4839,8 +4266,8 @@ export default function App() {
                             淨利率
                           </div>
                           <div
+                            className="hero-pct"
                             style={{
-                              fontSize: 48,
                               fontWeight: 700,
                               fontFamily: mono,
                               lineHeight: 1,
@@ -5236,6 +4663,7 @@ export default function App() {
                     <input
                       type="text"
                       placeholder="搜尋商品名稱或規格 ..."
+                      aria-label="搜尋商品名稱或規格"
                       value={mSearch}
                       onChange={(e) => setMSearch(e.target.value)}
                       style={{
@@ -5285,7 +4713,9 @@ export default function App() {
                           >
                             商品名稱
                           </SortTh>
-                          <th style={{ ...th, textAlign: "left" }}>規格</th>
+                          <th scope="col" style={{ ...th, textAlign: "left" }}>
+                            規格
+                          </th>
                           <SortTh
                             sortKey="soldQty"
                             currentSort={costSort}
@@ -5341,6 +4771,7 @@ export default function App() {
                             單位成本
                           </SortTh>
                           <th
+                            scope="col"
                             style={{ ...th, textAlign: "center", width: 40 }}
                           ></th>
                         </tr>
@@ -5432,31 +4863,21 @@ export default function App() {
                                           —
                                         </span>
                                       )}
-                                      <input
-                                        type="number"
-                                        value={costs[p.key] || ""}
-                                        onChange={(e) =>
-                                          setCosts((pr) => ({
-                                            ...pr,
-                                            [p.key]:
-                                              parseFloat(e.target.value) || 0,
-                                          }))
-                                        }
-                                        className={
-                                          miss
-                                            ? "iw"
-                                            : costs[p.key] > 0
-                                            ? "iok"
-                                            : ""
-                                        }
-                                        placeholder="—"
-                                        style={{ ...inp, width: 80 }}
+                                      <CostInput
+                                        costKey={p.key}
+                                        label={`${p.name} ${
+                                          p.option || ""
+                                        } 單位成本`}
+                                        value={costs[p.key]}
+                                        miss={miss}
+                                        onCommit={commitCost}
                                       />
                                     </div>
                                   </td>
                                   <td style={{ ...td2, textAlign: "center" }}>
                                     <Btn
                                       v="ghost"
+                                      aria-label={`刪除 ${p.name} 的成本設定`}
                                       onClick={() => {
                                         if (window.confirm("確定刪除？")) {
                                           const n = { ...costs };
@@ -5506,16 +4927,9 @@ export default function App() {
                       <span style={{ fontSize: 14, fontWeight: 700 }}>
                         單筆訂單決策明細
                       </span>
-                      {isSL && (
-                        <span style={{ fontSize: 11, color: "var(--dn)" }}>
-                          虧損 {slData?.lossCount} 筆
-                        </span>
-                      )}
-                      {!isSL && (
-                        <span style={{ fontSize: 11, color: "var(--dn)" }}>
-                          虧損 {spS?.lossN} 筆
-                        </span>
-                      )}
+                      <span style={{ fontSize: 11, color: "var(--dn)" }}>
+                        虧損 {isSL ? slData?.lossCount : spS?.lossN} 筆
+                      </span>
                     </div>
                     <div
                       style={{
@@ -5539,6 +4953,7 @@ export default function App() {
                         <input
                           type="text"
                           placeholder="搜尋單號或商品..."
+                          aria-label="搜尋單號或商品"
                           value={search}
                           onChange={(e) => setSearch(e.target.value)}
                           style={{
@@ -5609,7 +5024,12 @@ export default function App() {
                             單號
                           </SortTh>
                           {!isSL && (
-                            <th style={{ ...th, textAlign: "left" }}>商品</th>
+                            <th
+                              scope="col"
+                              style={{ ...th, textAlign: "left" }}
+                            >
+                              商品
+                            </th>
                           )}
                           <SortTh
                             sortKey="revenue"
@@ -5877,6 +5297,7 @@ export default function App() {
                         </span>
                         <select
                           value={pageSize}
+                          aria-label="每頁筆數"
                           onChange={(e) => {
                             setPageSize(Number(e.target.value));
                             setPage(0);
@@ -5903,18 +5324,24 @@ export default function App() {
                         }}
                       >
                         {[
-                          { label: "«", action: () => setPage(0) },
+                          { label: "«", aria: "第一頁", action: () => setPage(0) },
                           {
                             label: "‹",
+                            aria: "上一頁",
                             action: () => setPage((p) => Math.max(0, p - 1)),
                           },
                           null,
                           {
                             label: "›",
+                            aria: "下一頁",
                             action: () =>
                               setPage((p) => Math.min(totalPages - 1, p + 1)),
                           },
-                          { label: "»", action: () => setPage(totalPages - 1) },
+                          {
+                            label: "»",
+                            aria: "最後一頁",
+                            action: () => setPage(totalPages - 1),
+                          },
                         ].map((btn, i) =>
                           btn === null ? (
                             <span
@@ -5933,6 +5360,7 @@ export default function App() {
                             <Btn
                               key={i}
                               v="ghost"
+                              aria-label={btn.aria}
                               onClick={btn.action}
                               style={{
                                 padding: "4px 8px",
@@ -5981,6 +5409,8 @@ export default function App() {
           return (
             <div
               key={t.id}
+              role="status"
+              aria-live="polite"
               style={{
                 pointerEvents: "auto",
                 background: "var(--s1)",
@@ -6038,6 +5468,7 @@ export default function App() {
               )}
               <button
                 onClick={() => removeToast(t.id)}
+                aria-label="關閉通知"
                 style={{
                   border: "none",
                   background: "none",
