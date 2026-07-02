@@ -572,6 +572,7 @@ function OverviewDashboard({
   spOrders,
   slCosts,
   spCosts,
+  allMonthly,
   theme,
   onNavigate,
   sY,
@@ -624,6 +625,22 @@ function OverviewDashboard({
         level: "info",
         platform: "蝦皮",
         msg: `本期有 ${spS.lossN} 筆虧損訂單`,
+      });
+    if (slD && slD.returnRate > 0.05)
+      list.push({
+        level: "warn",
+        platform: "官網",
+        msg: `退貨率 ${fmtP(slD.returnRate)}（${
+          slD.returnCount
+        } 筆），高於 5% 警戒線`,
+      });
+    if (spS && spS.refundN > 0)
+      list.push({
+        level: "info",
+        platform: "蝦皮",
+        msg: `本期排除 ${spS.refundN} 筆退貨/退款訂單（${fmt$(
+          spS.refundG
+        )} 未計入營收）`,
       });
     if (
       slData?.matrixList?.some(
@@ -836,6 +853,7 @@ function OverviewDashboard({
               <div style={{ fontSize: 12, color: "var(--t4)", marginTop: 8 }}>
                 合計營收 {fmt$(totalRev)}
               </div>
+              <PeriodCompare monthly={allMonthly} sY={sY} sM={sM} />
             </div>
             <div>
               <div
@@ -1709,6 +1727,376 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
   );
 }
 
+/* ─── 單筆訂單損益計算（畫面與月度彙總共用，勿分岔） ─────────── */
+const slOrderFin = (order, fp, costsMap) => {
+  const ofp = order.snapshotFeeParams;
+  const sfr =
+    ((ofp?.platformFeeRate != null
+      ? Number(ofp.platformFeeRate)
+      : parseFloat(fp.platformFeeRate)) || 0) / 100;
+  const oer =
+    ((ofp?.opExpense != null
+      ? Number(ofp.opExpense)
+      : parseFloat(fp.opExpense)) || 0) / 100;
+  const dtr =
+    ((ofp?.tax != null ? Number(ofp.tax) : parseFloat(fp.tax)) || 0) / 100;
+  const pay = String(order.paymentMethod || "");
+  const dlv = String(order.deliveryMethod || "");
+  let pr = { rate: 0.022, flat: 0 };
+  for (const [k, v] of Object.entries(SL_PAYMENT_RATES)) {
+    if (pay.includes(k)) {
+      pr = v;
+      break;
+    }
+  }
+  const pf = order.revenue * pr.rate + pr.flat;
+  let sc2 = 0;
+  if (SL_INTL_METHODS.some((k) => dlv.includes(k))) sc2 = order.shippingIncome;
+  else {
+    for (const [k, v] of Object.entries(SL_SHIPPING_RATES)) {
+      if (dlv.includes(k)) {
+        sc2 = v;
+        break;
+      }
+    }
+    if (sc2 === 0) sc2 = 120;
+  }
+  const plf = order.revenue * sfr;
+  let oc = 0;
+  (order.items || []).forEach((item) => {
+    const cv =
+      Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
+      item.snapshotCost !== null
+        ? Number(item.snapshotCost) || 0
+        : Number(costsMap[item.key]) || 0;
+    oc += cv * item.qty;
+  });
+  const cm = order.revenue - oc - pf - sc2 - plf;
+  const tax = order.isTaxExempt ? 0 : order.revenue * dtr;
+  const opx = order.revenue * oer;
+  return { pf, sc2, plf, oc, cm, tax, opx, net: cm - opx - tax };
+};
+
+const spOrderFin = (order, fp, costsMap) => {
+  const st = safeText(order.status),
+    rf = safeText(order.refundStatus);
+  const isCanc = st.includes("不成立") || st.includes("取消");
+  const isRef =
+    !isCanc && (rf !== "" || (st.includes("退貨") && !st.includes("已完成")));
+  const gross = numOrZero(order.grossPrice);
+  const ofp = order.snapshotFeeParams;
+  const opEx =
+    ofp?.opExpense != null
+      ? Number(ofp.opExpense) || 0
+      : parseFloat(fp.opExpense) || 0;
+  const tx =
+    ofp?.tax != null ? Number(ofp.tax) || 0 : parseFloat(fp.tax) || 0;
+  let oCost = 0;
+  (order.items || []).forEach((item) => {
+    const ic =
+      Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
+      item.snapshotCost !== null
+        ? Number(item.snapshotCost) || 0
+        : Number(costsMap[item.key]) || 0;
+    oCost += ic * (item.qty || 1);
+  });
+  const voucher = numOrZero(order.sellerVoucher);
+  const fee =
+    numOrZero(order.exactOrderFee) + numOrZero(order.platformShippingFee);
+  const net = gross - voucher - fee;
+  const gp = net - oCost;
+  const opAmt = gross * (opEx / 100);
+  const taxBase = numOrZero(order.buyerTotal) || gross;
+  const txAmt = taxBase * (tx / 100);
+  return {
+    isCanc,
+    isRef,
+    gross,
+    voucher,
+    fee,
+    oCost,
+    net,
+    gp,
+    opAmt,
+    txAmt,
+    finalNet: gp - opAmt - txAmt,
+    opEx,
+    tx,
+  };
+};
+
+/* ─── 期間比較（環比／同比） ─────────────────────────────────── */
+const CmpVal = ({ label, cur, prev }) => {
+  let txt, c;
+  if (prev > 0) {
+    const d = (cur - prev) / prev;
+    txt = `${d >= 0 ? "+" : ""}${(d * 100).toFixed(1)}%`;
+    c = d > 0 ? "var(--up)" : d < 0 ? "var(--dn)" : "var(--t3)";
+  } else {
+    const d = cur - prev;
+    txt = `${d >= 0 ? "+" : "−"}${fmt$(Math.abs(d))}`;
+    c = d > 0 ? "var(--up)" : d < 0 ? "var(--dn)" : "var(--t3)";
+  }
+  return (
+    <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+      <span style={{ color: "var(--t3)" }}>{label}</span>
+      <span style={{ fontFamily: mono, fontWeight: 700, color: c }}>
+        {txt}
+      </span>
+    </span>
+  );
+};
+
+function PeriodCompare({ monthly, sY, sM }) {
+  const data = useMemo(() => {
+    if (!monthly || sY === "All") return null;
+    const sumYear = (y) => {
+      let rev = 0,
+        net = 0,
+        has = false;
+      Object.entries(monthly).forEach(([k, v]) => {
+        if (k.startsWith(y + "-")) {
+          rev += v.rev;
+          net += v.net;
+          has = true;
+        }
+      });
+      return has ? { rev, net } : null;
+    };
+    let cur;
+    const groups = [];
+    if (sM !== "All") {
+      cur = monthly[`${sY}-${sM}`];
+      const mNum = Number(sM);
+      const pmKey =
+        mNum === 1
+          ? `${Number(sY) - 1}-12`
+          : `${sY}-${String(mNum - 1).padStart(2, "0")}`;
+      const pyKey = `${Number(sY) - 1}-${sM}`;
+      if (monthly[pmKey])
+        groups.push({
+          label: `環比 ${pmKey.replace("-", "/")}`,
+          prev: monthly[pmKey],
+        });
+      if (monthly[pyKey])
+        groups.push({
+          label: `同比 ${pyKey.replace("-", "/")}`,
+          prev: monthly[pyKey],
+        });
+    } else {
+      cur = sumYear(sY);
+      const py = sumYear(String(Number(sY) - 1));
+      if (py) groups.push({ label: `同比 ${Number(sY) - 1}年`, prev: py });
+    }
+    if (!cur || !groups.length) return null;
+    return { cur, groups };
+  }, [monthly, sY, sM]);
+  if (!data) return null;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+      {data.groups.map((g) => (
+        <div
+          key={g.label}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "5px 12px",
+            borderRadius: 8,
+            background: "var(--s2)",
+            border: "1px solid var(--s3)",
+            fontSize: 11,
+            fontWeight: 600,
+          }}
+        >
+          <span style={{ color: "var(--t2)", fontWeight: 700 }}>
+            {g.label}
+          </span>
+          <CmpVal label="營收" cur={data.cur.rev} prev={g.prev.rev} />
+          <CmpVal label="淨利" cur={data.cur.net} prev={g.prev.net} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ─── 訂單展開明細 ───────────────────────────────────────────── */
+function OrderDetail({ order, isSL, slFp, slCosts, spCosts }) {
+  const costOf = (item) =>
+    Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
+    item.snapshotCost !== null
+      ? Number(item.snapshotCost) || 0
+      : Number((isSL ? slCosts : spCosts)[item.key]) || 0;
+
+  const lines = isSL
+    ? (() => {
+        const fin = slOrderFin(order, slFp, slCosts);
+        return [
+          { l: "訂單營收", v: order.revenue },
+          { l: "商品成本", v: -fin.oc, neg: true },
+          {
+            l: `金流手續費（${order.paymentMethod || "—"}）`,
+            v: -fin.pf,
+            neg: true,
+          },
+          {
+            l: `物流成本（${order.deliveryMethod || "—"}）`,
+            v: -fin.sc2,
+            neg: true,
+          },
+          { l: "系統服務費", v: -fin.plf, neg: true },
+          { l: "通路後毛利", v: fin.cm, sub: true },
+          { l: "內部營業費", v: -fin.opx, neg: true },
+          {
+            l: order.isTaxExempt ? "稅賦（免稅）" : "稅賦",
+            v: -fin.tax,
+            neg: true,
+          },
+          { l: "最終淨利", v: fin.net, bold: true },
+        ];
+      })()
+    : [
+        { l: "商品總價（含補貼還原）", v: order.localGross },
+        { l: "賣場優惠券", v: -numOrZero(order.sellerVoucher), neg: true },
+        { l: "平台手續費＋金流", v: -order.totalOrderFee, neg: true },
+        { l: "商品成本", v: -order.orderCost, neg: true },
+        { l: "通路後毛利", v: order.grossProfit, sub: true },
+        { l: "內部營業費", v: -order.orderOpExpense, neg: true },
+        { l: "稅賦（以買家支付計）", v: -order.orderTax, neg: true },
+        { l: "最終淨利", v: order.finalNetProfit, bold: true },
+      ];
+
+  const metaBits = isSL
+    ? [
+        order.status && `狀態：${order.status}`,
+        order.voucherAmount > 0 && `優惠折讓：${fmt$(order.voucherAmount)}`,
+        order.hasReturn && "⚠ 此訂單有退貨單",
+      ].filter(Boolean)
+    : [
+        order.status && `狀態：${order.status}`,
+        order.refundStatus && `退貨/退款：${order.refundStatus}`,
+        numOrZero(order.buyerTotal) > 0 &&
+          `買家總支付：${fmt$(order.buyerTotal)}`,
+      ].filter(Boolean);
+
+  const secTitle = {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "var(--t3)",
+    letterSpacing: "0.05em",
+    marginBottom: 6,
+  };
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+        gap: 20,
+      }}
+    >
+      <div>
+        <div style={secTitle}>商品明細</div>
+        {(order.items || []).map((it, i) => {
+          const c = costOf(it);
+          const price = isSL
+            ? Number(it.price) || 0
+            : numOrZero(it.activityPrice);
+          return (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
+                padding: "5px 0",
+                borderBottom: "1px dashed var(--s3)",
+                fontSize: 12,
+              }}
+            >
+              <span style={{ color: "var(--t1)", minWidth: 0 }}>
+                {it.name}
+                {it.option ? `（${it.option}）` : ""} × {it.qty}
+                {it.isGift && (
+                  <span style={{ color: "var(--purple)" }}>（贈品）</span>
+                )}
+              </span>
+              <span
+                style={{
+                  fontFamily: mono,
+                  whiteSpace: "nowrap",
+                  color: "var(--t2)",
+                }}
+              >
+                {fmt$(price * it.qty)} ／ 成本{" "}
+                {c > 0 ? (
+                  fmt$(c * it.qty)
+                ) : (
+                  <span style={{ color: "var(--wn)", fontWeight: 700 }}>
+                    未填
+                  </span>
+                )}
+              </span>
+            </div>
+          );
+        })}
+        {metaBits.length > 0 && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--t3)",
+              marginTop: 8,
+              lineHeight: 1.8,
+            }}
+          >
+            {metaBits.join("　")}
+          </div>
+        )}
+      </div>
+      <div>
+        <div style={secTitle}>損益拆解</div>
+        {lines.map((r, i) => (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              padding: r.sub || r.bold ? "8px 0 4px" : "4px 0",
+              fontSize: 12,
+              borderTop: r.sub || r.bold ? "1px solid var(--s3)" : "none",
+              marginTop: r.sub || r.bold ? 4 : 0,
+            }}
+          >
+            <span
+              style={{
+                color: r.bold ? "var(--t1)" : "var(--t2)",
+                fontWeight: r.bold || r.sub ? 700 : 500,
+              }}
+            >
+              {r.l}
+            </span>
+            <span
+              style={{
+                fontFamily: mono,
+                fontWeight: r.bold ? 800 : 600,
+                color: r.bold
+                  ? r.v >= 0
+                    ? "var(--up)"
+                    : "var(--dn)"
+                  : r.neg
+                  ? "var(--dn)"
+                  : "var(--t1)",
+              }}
+            >
+              {fmt$(r.v)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Main App ───────────────────────────────────────────────── */
 export default function App() {
   const [theme, setTheme] = useState(() => gl(SK.theme, "light"));
@@ -1736,6 +2124,8 @@ export default function App() {
   const [orderSort, setOrderSort] = useState({ key: "date", dir: "desc" });
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(30);
+  const [dragOver, setDragOver] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
 
   const fRef = useRef({});
   const cRef = useRef(null);
@@ -2538,10 +2928,14 @@ export default function App() {
     toast(`已匯入 ${count} 筆蝦皮訂單`, { type: "success" });
   };
 
-  const handleFile = (e) => {
-    const f = e.target.files?.[0];
+  const processFile = (f) => {
     if (!f) return;
-    const isX = f.name.endsWith(".xlsx") || f.name.endsWith(".xls");
+    const fname = f.name.toLowerCase();
+    const isX = fname.endsWith(".xlsx") || fname.endsWith(".xls");
+    if (!isX && !fname.endsWith(".csv")) {
+      toast("僅支援 CSV / XLSX / XLS 檔案", { type: "error" });
+      return;
+    }
     const rd = new FileReader();
     const exec = (d2, x) => {
       if (x) {
@@ -2569,6 +2963,10 @@ export default function App() {
         document.head.appendChild(s2);
       } else rd.readAsArrayBuffer(f);
     } else rd.readAsText(f);
+  };
+
+  const handleFile = (e) => {
+    processFile(e.target.files?.[0]);
     e.target.value = "";
   };
 
@@ -2618,6 +3016,8 @@ export default function App() {
       giftCost: 0,
       giftQty: 0,
       totalQty: 0,
+      returnCount: 0,
+      returnRev: 0,
     };
     const fl = all.filter((o) => {
       const oy = o.date.substring(0, 4),
@@ -2634,47 +3034,13 @@ export default function App() {
     });
     const ol = fl
       .map((order) => {
-        const ofp = order.snapshotFeeParams;
-        const sfr =
-          ((ofp?.platformFeeRate != null
-            ? Number(ofp.platformFeeRate)
-            : parseFloat(slFp.platformFeeRate)) || 0) / 100;
-        const oer =
-          ((ofp?.opExpense != null
-            ? Number(ofp.opExpense)
-            : parseFloat(slFp.opExpense)) || 0) / 100;
-        const dtr =
-          ((ofp?.tax != null ? Number(ofp.tax) : parseFloat(slFp.tax)) || 0) /
-          100;
-        let pr = { rate: 0.022, flat: 0 };
-        for (const [k, v] of Object.entries(SL_PAYMENT_RATES)) {
-          if (order.paymentMethod.includes(k)) {
-            pr = v;
-            break;
-          }
-        }
-        const pf = order.revenue * pr.rate + pr.flat;
-        let sc2 = 0;
-        if (SL_INTL_METHODS.some((k) => order.deliveryMethod.includes(k)))
-          sc2 = order.shippingIncome;
-        else {
-          for (const [k, v] of Object.entries(SL_SHIPPING_RATES)) {
-            if (order.deliveryMethod.includes(k)) {
-              sc2 = v;
-              break;
-            }
-          }
-          if (sc2 === 0) sc2 = 120;
-        }
-        const plf = order.revenue * sfr;
-        let oc = 0;
+        const fin = slOrderFin(order, slFp, slCosts);
         order.items.forEach((item) => {
           const cv =
             Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
             item.snapshotCost !== null
               ? Number(item.snapshotCost) || 0
               : Number(slCosts[item.key]) || 0;
-          oc += cv * item.qty;
           t.totalQty += item.qty;
           if (!mm[item.key])
             mm[item.key] = {
@@ -2697,10 +3063,7 @@ export default function App() {
             t.giftQty += item.qty;
           }
         });
-        const cm = order.revenue - oc - pf - sc2 - plf;
-        const tax = order.isTaxExempt ? 0 : order.revenue * dtr;
-        const opx = order.revenue * oer;
-        const net = cm - opx - tax;
+        const { pf, sc2, plf, oc, cm, tax, opx, net } = fin;
         t.rev += order.revenue;
         t.pFee += pf;
         t.sCost += sc2;
@@ -2712,6 +3075,10 @@ export default function App() {
         t.voucher += order.voucherAmount;
         t.opExpTotal += opx;
         t.taxTotal += tax;
+        if (order.hasReturn) {
+          t.returnCount++;
+          t.returnRev += order.revenue;
+        }
         t.valid++;
         return {
           ...order,
@@ -2740,6 +3107,7 @@ export default function App() {
           t.rev > 0 ? (t.pFee + t.sCost + t.platformFee) / t.rev : 0,
         voucherRate: t.rev > 0 ? t.voucher / t.rev : 0,
         giftCostRate: t.rev > 0 ? t.giftCost / t.rev : 0,
+        returnRate: t.valid > 0 ? t.returnCount / t.valid : 0,
       },
     };
   }, [slOrders, sY, sM, slFp, slCosts]);
@@ -2775,7 +3143,9 @@ export default function App() {
       tOp = 0,
       tTx = 0,
       validN = 0,
-      lossN = 0;
+      lossN = 0,
+      refundN = 0,
+      refundG = 0;
     const filtered = all.filter((o) => {
       if (sY !== "All" && !String(o.date).startsWith(sY)) return false;
       if (sM !== "All" && !String(o.date).startsWith(`${sY}-${sM}`))
@@ -2784,37 +3154,19 @@ export default function App() {
     });
     const orderList = filtered
       .map((order) => {
-        const st = safeText(order.status),
-          rf = safeText(order.refundStatus);
-        const isCanc = st.includes("不成立") || st.includes("取消");
-        const isRef =
-          !isCanc &&
-          (rf !== "" || (st.includes("退貨") && !st.includes("已完成")));
-
-        if (isCanc) return null;
-
-        const gross = numOrZero(order.grossPrice);
-
-        if (isRef) return null;
-
-        const fee = numOrZero(order.exactOrderFee);
-        const platformShipping = numOrZero(order.platformShippingFee);
-
-        const ofp = order.snapshotFeeParams;
-        const opEx =
-          ofp?.opExpense != null
-            ? Number(ofp.opExpense) || 0
-            : parseFloat(spFp.opExpense) || 0;
-        const tx =
-          ofp?.tax != null ? Number(ofp.tax) || 0 : parseFloat(spFp.tax) || 0;
-        let oCost = 0;
+        const fin = spOrderFin(order, spFp, spCosts);
+        if (fin.isCanc) return null;
+        if (fin.isRef) {
+          refundN++;
+          refundG += fin.gross;
+          return null;
+        }
         (order.items || []).forEach((item) => {
           const ic =
             Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
             item.snapshotCost !== null
               ? Number(item.snapshotCost) || 0
               : Number(spCosts[item.key]) || 0;
-          oCost += ic * (item.qty || 1);
           if (!prods[item.key])
             prods[item.key] = {
               key: item.key,
@@ -2826,34 +3178,30 @@ export default function App() {
           prods[item.key].soldQty += item.qty || 1;
           const ir = numOrZero(item.activityPrice) * (item.qty || 1);
           prods[item.key].estProfit +=
-            ir - ic * (item.qty || 1) - ir * (opEx / 100) - ir * (tx / 100);
+            ir -
+            ic * (item.qty || 1) -
+            ir * (fin.opEx / 100) -
+            ir * (fin.tx / 100);
         });
 
-        const net =
-          gross - numOrZero(order.sellerVoucher) - fee - platformShipping;
-        const gp = net - oCost;
-        const opAmt = gross * (opEx / 100);
-        const taxBase = numOrZero(order.buyerTotal) || gross;
-        const txAmt = taxBase * (tx / 100);
-        const finalNet = gp - opAmt - txAmt;
-        tG += gross;
-        tV += numOrZero(order.sellerVoucher);
-        tF += fee + platformShipping;
-        tC += oCost;
-        tOp += opAmt;
-        tTx += txAmt;
+        tG += fin.gross;
+        tV += fin.voucher;
+        tF += fin.fee;
+        tC += fin.oCost;
+        tOp += fin.opAmt;
+        tTx += fin.txAmt;
         validN++;
-        if (finalNet < 0) lossN++;
+        if (fin.finalNet < 0) lossN++;
         return {
           ...order,
-          localGross: gross,
-          totalOrderFee: fee + platformShipping,
-          orderCost: oCost,
-          netIncome: net,
-          grossProfit: gp,
-          finalNetProfit: finalNet,
-          orderOpExpense: opAmt,
-          orderTax: txAmt,
+          localGross: fin.gross,
+          totalOrderFee: fin.fee,
+          orderCost: fin.oCost,
+          netIncome: fin.net,
+          grossProfit: fin.gp,
+          finalNetProfit: fin.finalNet,
+          orderOpExpense: fin.opAmt,
+          orderTax: fin.txAmt,
         };
       })
       .filter(Boolean);
@@ -2904,6 +3252,8 @@ export default function App() {
         targetNet,
         validN,
         lossN,
+        refundN,
+        refundG,
         badge,
         avgAOV: validN > 0 ? tG / validN : 0,
         avgNetPer: validN > 0 ? afterComm / validN : 0,
@@ -2913,6 +3263,50 @@ export default function App() {
       },
     };
   }, [spOrders, sY, sM, spFp, spCosts, commissions]);
+
+  /* ─── 每月營收/淨利彙總（環比/同比用） ───────────────────── */
+  const slMonthly = useMemo(() => {
+    const map = {};
+    Object.values(slOrders).forEach((o) => {
+      const st = String(o.status || "");
+      if (st.includes("取消") || st.includes("刪除")) return;
+      const ym = String(o.date || "").substring(0, 7);
+      if (ym.length < 7) return;
+      if (!map[ym]) map[ym] = { rev: 0, net: 0 };
+      map[ym].rev += o.revenue || 0;
+      map[ym].net += slOrderFin(o, slFp, slCosts).net;
+    });
+    return map;
+  }, [slOrders, slFp, slCosts]);
+
+  const spMonthly = useMemo(() => {
+    const map = {};
+    Object.values(spOrders).forEach((o) => {
+      const ym = String(o.date || "").substring(0, 7);
+      if (ym.length < 7) return;
+      const fin = spOrderFin(o, spFp, spCosts);
+      if (fin.isCanc || fin.isRef) return;
+      if (!map[ym]) map[ym] = { rev: 0, net: 0 };
+      map[ym].rev += fin.gross;
+      map[ym].net += fin.finalNet;
+    });
+    Object.entries(commissions).forEach(([k, v]) => {
+      if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
+    });
+    return map;
+  }, [spOrders, spFp, spCosts, commissions]);
+
+  const allMonthly = useMemo(() => {
+    const map = {};
+    [slMonthly, spMonthly].forEach((src) =>
+      Object.entries(src).forEach(([k, v]) => {
+        if (!map[k]) map[k] = { rev: 0, net: 0 };
+        map[k].rev += v.rev;
+        map[k].net += v.net;
+      })
+    );
+    return map;
+  }, [slMonthly, spMonthly]);
 
   /* ─── Derived state ────────────────────────────────────────── */
   const isOverview = platform === "overview";
@@ -2944,6 +3338,7 @@ export default function App() {
 
   useEffect(() => {
     setPage(0);
+    setExpandedId(null);
   }, [lossOnly, search, orderSort, sY, sM, platform]);
 
   /* 首次載入資料時自動跳到最新月份（僅一次；手動切換年份會重設月份） */
@@ -3448,7 +3843,7 @@ export default function App() {
               <div
                 role="button"
                 tabIndex={0}
-                aria-label={`匯入${isSL ? "官網" : "蝦皮"}報表檔案`}
+                aria-label={`匯入${isSL ? "官網" : "蝦皮"}報表檔案（點擊或拖曳）`}
                 onClick={() => fRef.current._fileInput?.click()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -3456,13 +3851,26 @@ export default function App() {
                     fRef.current._fileInput?.click();
                   }
                 }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  processFile(e.dataTransfer.files?.[0]);
+                }}
                 style={{
-                  border: "1.5px dashed var(--s4)",
+                  border: `1.5px dashed ${
+                    dragOver ? accentColor : "var(--s4)"
+                  }`,
                   borderRadius: 12,
                   padding: "18px 12px",
                   textAlign: "center",
                   cursor: "pointer",
-                  background: "var(--s2)",
+                  background: dragOver ? accentDim : "var(--s2)",
+                  transition: "border-color .15s, background .15s",
                 }}
               >
                 <input
@@ -3623,13 +4031,18 @@ export default function App() {
                       )
                     )
                       return;
+                    const removed = {};
+                    toDelete.forEach((k) => {
+                      removed[k] = src[k];
+                    });
                     const updated = { ...src };
                     toDelete.forEach((k) => delete updated[k]);
-                    if (isSL) setSlOrders(updated);
-                    else setSpOrders(updated);
-                    toast(`已清除 ${toDelete.length} 筆，請重新上傳報表`, {
+                    const setter = isSL ? setSlOrders : setSpOrders;
+                    setter(updated);
+                    toast(`已清除 ${toDelete.length} 筆訂單`, {
                       type: "info",
-                      duration: 5000,
+                      action: () => setter((p) => ({ ...p, ...removed })),
+                      actionLabel: "復原",
                     });
                   }}
                   style={{ flex: 1, justifyContent: "center", fontSize: 10 }}
@@ -3650,6 +4063,7 @@ export default function App() {
                 spOrders={spOrders}
                 slCosts={slCosts}
                 spCosts={spCosts}
+                allMonthly={allMonthly}
                 theme={theme}
                 sY={sY}
                 sM={sM}
@@ -3730,6 +4144,12 @@ export default function App() {
                         <Tag v={slD.gapVal >= 0 ? "ok" : "bad"}>
                           <Zap size={10} /> {slD.gapVal >= 0 ? "穩健" : "警告"}
                         </Tag>
+                        {slD.returnCount > 0 && (
+                          <Tag v={slD.returnRate > 0.05 ? "warn" : "default"}>
+                            退貨 {slD.returnCount} 筆 ·{" "}
+                            {fmtP(slD.returnRate)}
+                          </Tag>
+                        )}
                         {missCost.n > 0 && (
                           <Tag
                             v="warn"
@@ -3806,6 +4226,11 @@ export default function App() {
                             原始營收：{fmt$(slD.rawTotal)} ｜ 取消：
                             {fmt$(slD.cancelledTotal)}
                           </div>
+                          <PeriodCompare
+                            monthly={slMonthly}
+                            sY={sY}
+                            sM={sM}
+                          />
                         </div>
                         <div style={{ textAlign: "right" }}>
                           <div
@@ -4210,6 +4635,12 @@ export default function App() {
                             <Users size={10} /> 已扣分潤 {fmt$(spS.comm)}
                           </Tag>
                         )}
+                        {spS.refundN > 0 && (
+                          <Tag v="default">
+                            退貨/退款 {spS.refundN} 筆 · {fmt$(spS.refundG)}{" "}
+                            未計入
+                          </Tag>
+                        )}
                       </div>
                       <div
                         style={{
@@ -4256,6 +4687,11 @@ export default function App() {
                               分潤前：{fmt$(spS.tNetPro)}
                             </div>
                           )}
+                          <PeriodCompare
+                            monthly={spMonthly}
+                            sY={sY}
+                            sM={sM}
+                          />
                         </div>
                         <div style={{ textAlign: "right" }}>
                           <div
@@ -5141,15 +5577,45 @@ export default function App() {
                               ? o.currentOrderContribution
                               : o.grossProfit;
                             const net = isSL ? o.net : o.finalNetProfit;
+                            const isOpen = expandedId === o.orderId;
                             return (
+                              <React.Fragment key={o.orderId}>
                               <tr
-                                key={o.orderId}
                                 className={isLoss ? "rl" : ""}
+                                tabIndex={0}
+                                aria-expanded={isOpen}
+                                onClick={() =>
+                                  setExpandedId(isOpen ? null : o.orderId)
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    setExpandedId(isOpen ? null : o.orderId);
+                                  }
+                                }}
+                                style={{ cursor: "pointer" }}
                               >
                                 <td style={{ ...td2 }}>
                                   <div
-                                    style={{ fontWeight: 600, fontSize: 12 }}
+                                    style={{
+                                      fontWeight: 600,
+                                      fontSize: 12,
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 4,
+                                    }}
                                   >
+                                    {isOpen ? (
+                                      <ChevronUp
+                                        size={11}
+                                        color="var(--t3)"
+                                      />
+                                    ) : (
+                                      <ChevronDown
+                                        size={11}
+                                        color="var(--t3)"
+                                      />
+                                    )}
                                     {o.date}
                                   </div>
                                   <div
@@ -5241,6 +5707,27 @@ export default function App() {
                                   {fmt$(net)}
                                 </td>
                               </tr>
+                              {isOpen && (
+                                <tr>
+                                  <td
+                                    colSpan={isSL ? 6 : 7}
+                                    style={{
+                                      ...td2,
+                                      background: "var(--s2)",
+                                      padding: "16px 20px",
+                                    }}
+                                  >
+                                    <OrderDetail
+                                      order={o}
+                                      isSL={isSL}
+                                      slFp={slFp}
+                                      slCosts={slCosts}
+                                      spCosts={spCosts}
+                                    />
+                                  </td>
+                                </tr>
+                              )}
+                              </React.Fragment>
                             );
                           })
                         ) : (
