@@ -2163,6 +2163,8 @@ export default function App() {
       unSl();
       unSp();
     };
+    // 監聽器只在登入完成時建立一次；slOrders/spOrders 僅供一次性遷移讀取
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aReady]);
 
   /* Firebase save (meta + only changed months) */
