@@ -538,7 +538,7 @@ const CostInput = React.memo(function CostInput({
   const focused = useRef(false);
   useEffect(() => {
     if (!focused.current) setDraft(norm(value));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
   }, [value]);
   return (
     <input
@@ -2164,7 +2164,7 @@ export default function App() {
       unSp();
     };
     // 監聽器只在登入完成時建立一次；slOrders/spOrders 僅供一次性遷移讀取
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
   }, [aReady]);
 
   /* Firebase save (meta + only changed months) */
