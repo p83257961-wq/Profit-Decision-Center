@@ -257,6 +257,16 @@ const periodExpense = (map, y, m, range) => {
     );
   return val((map || {})[commKey(y, m)]);
 };
+/* 按月費用（分潤／廣告）更新：空值＝刪除該月 key */
+const monthlyUpd = (setter, key, value) =>
+  setter((prev) => {
+    if (value === "" || value === null || value === undefined) {
+      const n = { ...prev };
+      delete n[key];
+      return n;
+    }
+    return { ...prev, [key]: Number(value) };
+  });
 /* 輸入防抖：搜尋框用，避免每個按鍵觸發全表過濾 */
 const useDebounced = (value, delay = 200) => {
   const [v, setV] = useState(value);
@@ -3921,21 +3931,18 @@ function ProfitCenter() {
     toast("報表已匯出", { type: "success" });
   };
 
-  const mkMonthlyUpd = (setter) => (key, value) =>
-    setter((prev) => {
-      if (value === "" || value === null || value === undefined) {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      }
-      return { ...prev, [key]: Number(value) };
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const handleComm = useCallback(mkMonthlyUpd(setCommissions), []);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const handleSlAd = useCallback(mkMonthlyUpd(setSlAd), []);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const handleSpAd = useCallback(mkMonthlyUpd(setSpAd), []);
+  const handleComm = useCallback(
+    (key, value) => monthlyUpd(setCommissions, key, value),
+    []
+  );
+  const handleSlAd = useCallback(
+    (key, value) => monthlyUpd(setSlAd, key, value),
+    []
+  );
+  const handleSpAd = useCallback(
+    (key, value) => monthlyUpd(setSpAd, key, value),
+    []
+  );
 
   const commitCost = useCallback(
     (key, n) => {
