@@ -32,7 +32,6 @@ import {
   ChevronDown,
   ChevronUp,
   Users,
-  Megaphone,
   X,
   Info,
 } from "lucide-react";
@@ -129,8 +128,6 @@ const SK = {
   slOrders: "upc_sl_orders_v1",
   spOrders: "upc_sp_orders_v1",
   commissions: "upc_commissions_v1",
-  slAd: "upc_sl_adspend_v1",
-  spAd: "upc_sp_adspend_v1",
   theme: "upc_theme_v1",
 };
 
@@ -239,7 +236,7 @@ const ymOverlaps = (ym, range) => {
   if (range.to && start > range.to) return false;
   return true;
 };
-/* 期間費用加總：分潤／廣告費共用（key 為 YYYY-MM） */
+/* 期間費用加總：分潤等按月費用用（key 為 YYYY-MM） */
 const periodExpense = (map, y, m, range) => {
   const val = (v) =>
     v !== "" && v !== undefined && v !== null ? Number(v) || 0 : 0;
@@ -257,7 +254,7 @@ const periodExpense = (map, y, m, range) => {
     );
   return val((map || {})[commKey(y, m)]);
 };
-/* 按月費用（分潤／廣告）更新：空值＝刪除該月 key */
+/* 按月費用（分潤）更新：空值＝刪除該月 key */
 const monthlyUpd = (setter, key, value) =>
   setter((prev) => {
     if (value === "" || value === null || value === undefined) {
@@ -757,7 +754,7 @@ function OverviewDashboard({
   }, [slD, spS, slData, spData, slCosts, spCosts]);
 
   /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響；
-     淨利線取自 allMonthly（已扣分潤/廣告費）；自訂區間因非整月，不畫淨利線 */
+     淨利線取自 allMonthly（已扣分潤）；自訂區間因非整月，不畫淨利線 */
   const trendData = useMemo(() => {
     const byMonth = {};
     const passPeriod = (d) => {
@@ -1712,7 +1709,7 @@ function OverviewDashboard({
   );
 }
 
-/* ─── Monthly Expense Panel（分潤／廣告費共用）──────────────── */
+/* ─── Monthly Expense Panel（分潤等按月費用）─────────────────── */
 function MonthlyExpensePanel({
   title,
   icon,
@@ -2032,7 +2029,9 @@ function PeriodCompare({ monthly, sY, sM }) {
       });
       return has ? { rev, net } : null;
     };
+    /* 節慶型電商季節性強：同比（去年同期）優先，環比僅供參考 */
     let cur;
+    let missYoY = null;
     const groups = [];
     if (sM !== "All") {
       cur = monthly[`${sY}-${sM}`];
@@ -2042,23 +2041,31 @@ function PeriodCompare({ monthly, sY, sM }) {
           ? `${Number(sY) - 1}-12`
           : `${sY}-${String(mNum - 1).padStart(2, "0")}`;
       const pyKey = `${Number(sY) - 1}-${sM}`;
+      if (monthly[pyKey])
+        groups.push({
+          label: `同比 ${pyKey.replace("-", "/")}`,
+          prev: monthly[pyKey],
+          primary: true,
+        });
+      else missYoY = `同比 ${pyKey.replace("-", "/")}`;
       if (monthly[pmKey])
         groups.push({
           label: `環比 ${pmKey.replace("-", "/")}`,
           prev: monthly[pmKey],
         });
-      if (monthly[pyKey])
-        groups.push({
-          label: `同比 ${pyKey.replace("-", "/")}`,
-          prev: monthly[pyKey],
-        });
     } else {
       cur = sumYear(sY);
       const py = sumYear(String(Number(sY) - 1));
-      if (py) groups.push({ label: `同比 ${Number(sY) - 1}年`, prev: py });
+      if (py)
+        groups.push({
+          label: `同比 ${Number(sY) - 1}年`,
+          prev: py,
+          primary: true,
+        });
+      else missYoY = `同比 ${Number(sY) - 1}年`;
     }
-    if (!cur || !groups.length) return null;
-    return { cur, groups };
+    if (!cur || (!groups.length && !missYoY)) return null;
+    return { cur, groups, missYoY };
   }, [monthly, sY, sM]);
   if (!data) return null;
   return (
@@ -2072,19 +2079,46 @@ function PeriodCompare({ monthly, sY, sM }) {
             gap: 10,
             padding: "5px 12px",
             borderRadius: 8,
-            background: "var(--s2)",
-            border: "1px solid var(--s3)",
+            background: g.primary ? "var(--accent-dim)" : "var(--s2)",
+            border: `1px solid ${g.primary ? "var(--accent-bdr)" : "var(--s3)"}`,
             fontSize: 11,
             fontWeight: 600,
           }}
         >
-          <span style={{ color: "var(--t2)", fontWeight: 700 }}>
+          <span
+            style={{
+              color: g.primary ? "var(--accent-text)" : "var(--t2)",
+              fontWeight: 700,
+            }}
+          >
             {g.label}
           </span>
           <CmpVal label="營收" cur={data.cur.rev} prev={g.prev.rev} />
           <CmpVal label="淨利" cur={data.cur.net} prev={g.prev.net} />
         </div>
       ))}
+      {data.missYoY && (
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "5px 12px",
+            borderRadius: 8,
+            background: "var(--s2)",
+            border: "1px dashed var(--s4)",
+            fontSize: 11,
+            fontWeight: 600,
+          }}
+        >
+          <span style={{ color: "var(--t3)", fontWeight: 700 }}>
+            {data.missYoY}
+          </span>
+          <span style={{ color: "var(--t4)", fontWeight: 500 }}>
+            匯入去年報表後顯示
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -2277,8 +2311,6 @@ function ProfitCenter() {
   const [slOrders, setSlOrders] = useState(() => gl(SK.slOrders, {}));
   const [spOrders, setSpOrders] = useState(() => gl(SK.spOrders, {}));
   const [commissions, setCommissions] = useState(() => gl(SK.commissions, {}));
-  const [slAd, setSlAd] = useState(() => gl(SK.slAd, {}));
-  const [spAd, setSpAd] = useState(() => gl(SK.spAd, {}));
 
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
@@ -2385,12 +2417,6 @@ function ProfitCenter() {
   useEffect(() => {
     persist(SK.commissions, commissions);
   }, [commissions, persist]);
-  useEffect(() => {
-    persist(SK.slAd, slAd);
-  }, [slAd, persist]);
-  useEffect(() => {
-    persist(SK.spAd, spAd);
-  }, [spAd, persist]);
 
   /* Firebase init */
   useEffect(() => {
@@ -2621,8 +2647,6 @@ function ProfitCenter() {
             if (metaData.slCosts) setSlCosts(metaData.slCosts);
             if (metaData.spCosts) setSpCosts(metaData.spCosts);
             if (metaData.commissions) setCommissions(metaData.commissions);
-            if (metaData.slAd) setSlAd(metaData.slAd);
-            if (metaData.spAd) setSpAd(metaData.spAd);
             lRMeta.current = rMs;
             lL.current = rMs;
             setLastSyncAt(Date.now());
@@ -2750,8 +2774,6 @@ function ProfitCenter() {
           slCosts,
           spCosts,
           commissions,
-          slAd,
-          spAd,
           updatedAtMs: ms,
           updatedBy: meta.current.clientId,
         });
@@ -2832,8 +2854,6 @@ function ProfitCenter() {
     slOrders,
     spOrders,
     commissions,
-    slAd,
-    spAd,
     aReady,
     cReady,
   ]);
@@ -3297,10 +3317,7 @@ function ProfitCenter() {
         };
       })
       .sort((a, b) => b.date.localeCompare(a.date));
-    /* 廣告費為期間層級費用，從最終淨利實扣（單筆訂單淨利不分攤） */
-    const ad = periodExpense(slAd, sY, sM, range);
-    const netFinal = t.net - ad;
-    const tnm = t.rev > 0 ? netFinal / t.rev : 0;
+    const tnm = t.rev > 0 ? t.net / t.rev : 0;
     return {
       years,
       months,
@@ -3309,8 +3326,6 @@ function ProfitCenter() {
       matrixList: Object.values(mm).sort((a, b) => b.soldQty - a.soldQty),
       summary: {
         ...t,
-        net: netFinal,
-        adSpend: ad,
         trueNetMargin: tnm,
         gapVal: (tnm - tnr) * 100,
         targetNetRate: tnr,
@@ -3322,7 +3337,7 @@ function ProfitCenter() {
         returnRate: t.valid > 0 ? t.returnCount / t.valid : 0,
       },
     };
-  }, [slOrders, sY, sM, slFp, slCosts, slAd, range, inPeriod]);
+  }, [slOrders, sY, slFp, slCosts, inPeriod]);
 
   /* ─── Shopee Data Processing ──────────────────────────────── */
   const spData = useMemo(() => {
@@ -3417,11 +3432,10 @@ function ProfitCenter() {
         };
       })
       .filter(Boolean);
-    /* 分潤與廣告費皆為期間層級費用，從最終淨利實扣 */
+    /* 分潤為期間層級費用，從最終淨利實扣 */
     const comm = periodExpense(commissions, sY, sM, range);
-    const ad = periodExpense(spAd, sY, sM, range);
     const tNetPro = tG - tV - tF - tC - tOp - tTx;
-    const afterComm = tNetPro - comm - ad;
+    const afterComm = tNetPro - comm;
     const netMargin = tG > 0 ? afterComm / tG : 0;
 
     let badge = { label: "虧損", color: "var(--dn)" };
@@ -3448,7 +3462,6 @@ function ProfitCenter() {
         tTx,
         tNetPro,
         comm,
-        ad,
         afterComm,
         netMargin,
         targetNet,
@@ -3464,9 +3477,9 @@ function ProfitCenter() {
         voucherRate: tG > 0 ? tV / tG : 0,
       },
     };
-  }, [spOrders, sY, sM, spFp, spCosts, commissions, spAd, range, inPeriod]);
+  }, [spOrders, sY, sM, spFp, spCosts, commissions, range, inPeriod]);
 
-  /* ─── 每月營收/淨利彙總（環比/同比用；已扣分潤與廣告費） ── */
+  /* ─── 每月營收/淨利彙總（環比/同比用；已扣分潤） ────────── */
   const slMonthly = useMemo(() => {
     const map = {};
     Object.values(slOrders).forEach((o) => {
@@ -3478,11 +3491,8 @@ function ProfitCenter() {
       map[ym].rev += o.revenue || 0;
       map[ym].net += slOrderFin(o, slFp, slCosts).net;
     });
-    Object.entries(slAd).forEach(([k, v]) => {
-      if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
-    });
     return map;
-  }, [slOrders, slFp, slCosts, slAd]);
+  }, [slOrders, slFp, slCosts]);
 
   const spMonthly = useMemo(() => {
     const map = {};
@@ -3498,11 +3508,8 @@ function ProfitCenter() {
     Object.entries(commissions).forEach(([k, v]) => {
       if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
     });
-    Object.entries(spAd).forEach(([k, v]) => {
-      if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
-    });
     return map;
-  }, [spOrders, spFp, spCosts, commissions, spAd]);
+  }, [spOrders, spFp, spCosts, commissions]);
 
   const allMonthly = useMemo(() => {
     const map = {};
@@ -3844,9 +3851,8 @@ function ProfitCenter() {
         ["營收", r0(slD0.rev)],
         ["商品成本", r0(slD0.cost)],
         ["通路費用（金流+物流+系統）", r0(slD0.pFee + slD0.sCost + slD0.platformFee)],
-        ["營業費", r0(slD0.opExpTotal)],
+        ["營業費（含廣告）", r0(slD0.opExpTotal)],
         ["稅賦", r0(slD0.taxTotal)],
-        ["廣告費", r0(slD0.adSpend)],
         ["最終淨利", r0(slD0.net)],
         ["淨利率", (slD0.trueNetMargin * 100).toFixed(2) + "%"],
         []
@@ -3885,10 +3891,9 @@ function ProfitCenter() {
         ["營收（含補貼還原）", r0(spS0.tG)],
         ["商品成本", r0(spS0.tC)],
         ["通路費用（手續費+賣場券）", r0(spS0.tF + spS0.tV)],
-        ["營業費", r0(spS0.tOp)],
+        ["營業費（含廣告）", r0(spS0.tOp)],
         ["稅賦", r0(spS0.tTx)],
         ["分潤", r0(spS0.comm)],
-        ["廣告費", r0(spS0.ad)],
         ["最終淨利", r0(spS0.afterComm)],
         ["淨利率", (spS0.netMargin * 100).toFixed(2) + "%"],
         []
@@ -3935,15 +3940,6 @@ function ProfitCenter() {
     (key, value) => monthlyUpd(setCommissions, key, value),
     []
   );
-  const handleSlAd = useCallback(
-    (key, value) => monthlyUpd(setSlAd, key, value),
-    []
-  );
-  const handleSpAd = useCallback(
-    (key, value) => monthlyUpd(setSpAd, key, value),
-    []
-  );
-
   const commitCost = useCallback(
     (key, n) => {
       const setter = isSL ? setSlCosts : setSpCosts;
@@ -4442,21 +4438,6 @@ function ProfitCenter() {
                 />
               )}
 
-              {/* Ad Spend Panel (both platforms) */}
-              {currentData && (
-                <MonthlyExpensePanel
-                  title={isSL ? "廣告費（Google Ads 等）" : "廣告費（蝦皮廣告）"}
-                  icon={<Megaphone size={12} color="var(--orange)" />}
-                  color="var(--orange)"
-                  values={isSL ? slAd : spAd}
-                  onUpdate={isSL ? handleSlAd : handleSpAd}
-                  selYear={sY}
-                  selMonth={sM}
-                  range={range}
-                  hint="此期間實際廣告支出將從最終淨利扣除"
-                />
-              )}
-
               {/* Reset */}
               <div style={{ display: "flex", gap: 6 }}>
                 <Btn
@@ -4636,12 +4617,6 @@ function ProfitCenter() {
                                 )}・稅 ${pct(snapParams.list[0].tax)}`}
                           </Tag>
                         )}
-                        {slD.adSpend > 0 && (
-                          <Tag v="warn">
-                            <Megaphone size={10} /> 已扣廣告費{" "}
-                            {fmt$(slD.adSpend)}
-                          </Tag>
-                        )}
                         <span
                           style={{
                             fontSize: 12,
@@ -4700,8 +4675,6 @@ function ProfitCenter() {
                           >
                             原始營收：{fmt$(slD.rawTotal)} ｜ 取消：
                             {fmt$(slD.cancelledTotal)}
-                            {slD.adSpend > 0 &&
-                              ` ｜ 廣告費前：${fmt$(slD.net + slD.adSpend)}`}
                           </div>
                           <PeriodCompare
                             monthly={slMonthly}
@@ -4757,7 +4730,7 @@ function ProfitCenter() {
                           </div>
                         </div>
                       </div>
-                      {/* Waterfall：通路後毛利 − 營業費 − 稅賦 −（廣告費）= 淨利，逐項可驗算 */}
+                      {/* Waterfall：通路後毛利 − 營業費(含廣告) − 稅賦 = 淨利，逐項可驗算 */}
                       <div
                         style={{
                           marginTop: 28,
@@ -4792,15 +4765,6 @@ function ProfitCenter() {
                             },
                             { l: "營業費", v: -slD.opExpTotal, c: "var(--dn)" },
                             { l: "稅賦", v: -slD.taxTotal, c: "var(--dn)" },
-                            ...(slD.adSpend > 0
-                              ? [
-                                  {
-                                    l: "廣告費",
-                                    v: -slD.adSpend,
-                                    c: "var(--dn)",
-                                  },
-                                ]
-                              : []),
                             {
                               l: "淨利",
                               v: slD.net,
@@ -5128,11 +5092,6 @@ function ProfitCenter() {
                             <Users size={10} /> 已扣分潤 {fmt$(spS.comm)}
                           </Tag>
                         )}
-                        {spS.ad > 0 && (
-                          <Tag v="warn">
-                            <Megaphone size={10} /> 已扣廣告費 {fmt$(spS.ad)}
-                          </Tag>
-                        )}
                         {spS.refundN > 0 && (
                           <Tag v="default">
                             退貨/退款 {spS.refundN} 筆 · {fmt$(spS.refundG)}{" "}
@@ -5174,7 +5133,7 @@ function ProfitCenter() {
                           >
                             {fmt$(spS.afterComm)}
                           </div>
-                          {(spS.comm > 0 || spS.ad > 0) && (
+                          {spS.comm > 0 && (
                             <div
                               style={{
                                 fontSize: 12,
@@ -5182,7 +5141,7 @@ function ProfitCenter() {
                                 marginTop: 6,
                               }}
                             >
-                              扣分潤／廣告前：{fmt$(spS.tNetPro)}
+                              分潤前：{fmt$(spS.tNetPro)}
                             </div>
                           )}
                           <PeriodCompare
@@ -5230,7 +5189,7 @@ function ProfitCenter() {
                           </div>
                         </div>
                       </div>
-                      {/* Waterfall：通路後毛利 − 營業費 − 稅賦 −（分潤/廣告）= 淨利，逐項可驗算 */}
+                      {/* Waterfall：通路後毛利 − 營業費(含廣告) − 稅賦 −（分潤）= 淨利，逐項可驗算 */}
                       <div
                         style={{
                           marginTop: 28,
@@ -5266,9 +5225,6 @@ function ProfitCenter() {
                             { l: "稅賦", v: -spS.tTx, neg: true },
                             ...(spS.comm > 0
                               ? [{ l: "分潤", v: -spS.comm, neg: true }]
-                              : []),
-                            ...(spS.ad > 0
-                              ? [{ l: "廣告費", v: -spS.ad, neg: true }]
                               : []),
                             { l: "淨利", v: spS.afterComm, bold: true },
                           ].map((item, i, arr) => (
@@ -5359,18 +5315,10 @@ function ProfitCenter() {
                               ? "var(--sp-accent)"
                               : "var(--dn)",
                           h:
-                            spS.comm > 0 || spS.ad > 0
-                              ? `已扣 ${[
-                                  spS.comm > 0 ? `分潤 ${fmt$(spS.comm)}` : "",
-                                  spS.ad > 0 ? `廣告 ${fmt$(spS.ad)}` : "",
-                                ]
-                                  .filter(Boolean)
-                                  .join("、")}`
+                            spS.comm > 0
+                              ? `-${fmt$(spS.comm)} 分潤`
                               : `淨利率 ${fmtP(spS.netMargin)}`,
-                          hc:
-                            spS.comm > 0 || spS.ad > 0
-                              ? "var(--purple)"
-                              : "var(--t4)",
+                          hc: spS.comm > 0 ? "var(--purple)" : "var(--t4)",
                           border: "var(--sp-accent)",
                         },
                       ].map((k, i) => (
