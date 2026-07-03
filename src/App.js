@@ -32,6 +32,7 @@ import {
   ChevronDown,
   ChevronUp,
   Users,
+  Megaphone,
   X,
   Info,
 } from "lucide-react";
@@ -43,6 +44,7 @@ import {
   ResponsiveContainer,
   ComposedChart,
   Bar,
+  Line,
 } from "recharts";
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
@@ -127,6 +129,8 @@ const SK = {
   slOrders: "upc_sl_orders_v1",
   spOrders: "upc_sp_orders_v1",
   commissions: "upc_commissions_v1",
+  slAd: "upc_sl_adspend_v1",
+  spAd: "upc_sp_adspend_v1",
   theme: "upc_theme_v1",
 };
 
@@ -226,6 +230,43 @@ const parseCSV = (text) => {
 const commKey = (yr, mo) =>
   yr === "All" ? "All" : mo === "All" ? yr : `${yr}-${mo}`;
 
+/* 月份是否與自訂區間重疊（自訂區間的月費用以整月計） */
+const ymOverlaps = (ym, range) => {
+  if (!range) return true;
+  const start = `${ym}-01`,
+    end = `${ym}-31`;
+  if (range.from && end < range.from) return false;
+  if (range.to && start > range.to) return false;
+  return true;
+};
+/* 期間費用加總：分潤／廣告費共用（key 為 YYYY-MM） */
+const periodExpense = (map, y, m, range) => {
+  const val = (v) =>
+    v !== "" && v !== undefined && v !== null ? Number(v) || 0 : 0;
+  if (y === "Custom")
+    return Object.entries(map || {}).reduce(
+      (s, [k, v]) => (ymOverlaps(k, range) ? s + val(v) : s),
+      0
+    );
+  if (y === "All")
+    return Object.values(map || {}).reduce((s, v) => s + val(v), 0);
+  if (m === "All")
+    return Object.entries(map || {}).reduce(
+      (s, [k, v]) => (k.startsWith(y + "-") ? s + val(v) : s),
+      0
+    );
+  return val((map || {})[commKey(y, m)]);
+};
+/* 輸入防抖：搜尋框用，避免每個按鍵觸發全表過濾 */
+const useDebounced = (value, delay = 200) => {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return v;
+};
+
 /* ─── CSS ─────────────────────────────────────────────────────── */
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap');
@@ -261,9 +302,9 @@ const CSS = `
 ::-webkit-scrollbar-thumb{background:var(--s4);border-radius:99px;}
 @keyframes fadeUp{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:translateY(0);}}
 @keyframes spin{to{transform:rotate(360deg);}}
-@keyframes notifIn{from{opacity:0;transform:translate(-50%,-10px);}to{opacity:1;transform:translate(-50%,0);}}
 @keyframes toastIn{from{opacity:0;transform:translateX(100%);}to{opacity:1;transform:translateX(0);}}
 @keyframes toastOut{from{opacity:1;}to{opacity:0;transform:translateX(100%);}}
+@keyframes dlgIn{from{opacity:0;transform:scale(.96);}to{opacity:1;transform:scale(1);}}
 .spin{animation:spin 1s linear infinite;}
 .f0{animation:fadeUp .42s cubic-bezier(.16,1,.3,1) both;}
 .f1{animation:fadeUp .42s cubic-bezier(.16,1,.3,1) .06s both;}
@@ -564,6 +605,36 @@ const CostInput = React.memo(function CostInput({
   );
 });
 
+/* 財務參數輸入框：同樣失焦才提交，避免每個按鍵觸發全部訂單重算＋雲端寫入 */
+const FpInput = React.memo(function FpInput({ field, label, value, onCommit }) {
+  const [draft, setDraft] = useState(() => String(value ?? ""));
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setDraft(String(value ?? ""));
+    // eslint-disable-next-line
+  }, [value]);
+  return (
+    <input
+      type="number"
+      step="0.1"
+      aria-label={label}
+      value={draft}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        focused.current = false;
+        onCommit(field, draft);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
+      style={{ ...inp, width: 60, fontSize: 12 }}
+    />
+  );
+});
+
 /* ─── Overview Dashboard ────────────────────────────────────── */
 function OverviewDashboard({
   slData,
@@ -577,12 +648,14 @@ function OverviewDashboard({
   onNavigate,
   sY,
   sM,
+  range,
 }) {
   const slD = slData?.summary;
   const spS = spData?.s;
   const isDark = theme === "dark";
   const greenC = isDark ? "#2ECC71" : "#1A6B3C";
   const spC = isDark ? "#FF6533" : "#EE4D2D";
+  const goldC = isDark ? "#C9A84C" : "#8B6914";
   const gridC = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)";
 
   const hasAny = slD || spS;
@@ -593,7 +666,13 @@ function OverviewDashboard({
   const spRevShare = totalRev > 0 ? (spS?.tG || 0) / totalRev : 0;
 
   const periodLabel =
-    sY === "All" ? "歷年" : sM === "All" ? `${sY}年` : `${sY}/${sM}`;
+    sY === "Custom"
+      ? `${range?.from || "起"} ～ ${range?.to || "迄"}`
+      : sY === "All"
+      ? "歷年"
+      : sM === "All"
+      ? `${sY}年`
+      : `${sY}/${sM}`;
 
   const alerts = useMemo(() => {
     const list = [];
@@ -667,15 +746,26 @@ function OverviewDashboard({
     return list;
   }, [slD, spS, slData, spData, slCosts, spCosts]);
 
-  /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響 */
+  /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響；
+     淨利線取自 allMonthly（已扣分潤/廣告費）；自訂區間因非整月，不畫淨利線 */
   const trendData = useMemo(() => {
     const byMonth = {};
+    const passPeriod = (d) => {
+      if (sY === "Custom") {
+        if (range?.from && d < range.from) return false;
+        if (range?.to && d > range.to) return false;
+        return true;
+      }
+      if (sY && sY !== "All" && !d.startsWith(sY)) return false;
+      return true;
+    };
     Object.values(slOrders || {}).forEach((o) => {
       const cx =
         (o.status || "").includes("取消") || (o.status || "").includes("刪除");
       if (cx) return;
-      if (sY && sY !== "All" && !String(o.date).startsWith(sY)) return;
-      const ym = String(o.date || "").substring(0, 7);
+      const d = String(o.date || "");
+      if (!passPeriod(d)) return;
+      const ym = d.substring(0, 7);
       if (!ym || ym.length < 7) return;
       if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0 };
       byMonth[ym].slRev += o.revenue || 0;
@@ -689,8 +779,9 @@ function OverviewDashboard({
         rf !== "" ||
         (st.includes("退貨") && !st.includes("已完成"));
       if (bad) return;
-      if (sY && sY !== "All" && !String(o.date).startsWith(sY)) return;
-      const ym = String(o.date || "").substring(0, 7);
+      const d = String(o.date || "");
+      if (!passPeriod(d)) return;
+      const ym = d.substring(0, 7);
       if (!ym || ym.length < 7) return;
       if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0 };
       const gross = o.grossPrice || 0;
@@ -703,8 +794,10 @@ function OverviewDashboard({
         ...d,
         label: d.month.substring(2).replace("-", "/"),
         total: d.slRev + d.spRev,
+        net: sY === "Custom" ? undefined : allMonthly?.[d.month]?.net,
       }));
-  }, [slOrders, spOrders, sY]);
+  }, [slOrders, spOrders, sY, range, allMonthly]);
+  const showNetLine = trendData.some((d) => d.net !== undefined);
 
   const crossProductRank = useMemo(() => {
     const map = {};
@@ -1206,7 +1299,7 @@ function OverviewDashboard({
               gap: 6,
             }}
           >
-            <TrendingUp size={14} color="var(--t3)" /> 月度營收趨勢
+            <TrendingUp size={14} color="var(--t3)" /> 月度營收與淨利趨勢
           </div>
           <div
             style={{
@@ -1245,6 +1338,26 @@ function OverviewDashboard({
               />
               蝦皮
             </span>
+            {showNetLine && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: 8,
+                    height: 3,
+                    borderRadius: 2,
+                    background: goldC,
+                  }}
+                />
+                淨利
+              </span>
+            )}
           </div>
           <ResponsiveContainer width="100%" height={180}>
             <ComposedChart
@@ -1277,7 +1390,9 @@ function OverviewDashboard({
               <RTooltip
                 content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
-                  const total = payload.reduce((s, e) => s + (e.value || 0), 0);
+                  const bars = payload.filter((e) => e.dataKey !== "net");
+                  const netE = payload.find((e) => e.dataKey === "net");
+                  const total = bars.reduce((s, e) => s + (e.value || 0), 0);
                   return (
                     <div
                       style={{
@@ -1300,7 +1415,7 @@ function OverviewDashboard({
                       >
                         {label}
                       </div>
-                      {payload.map((e, i) => {
+                      {bars.map((e, i) => {
                         const pct =
                           total > 0
                             ? (((e.value || 0) / total) * 100).toFixed(1)
@@ -1381,7 +1496,7 @@ function OverviewDashboard({
                             fontWeight: 600,
                           }}
                         >
-                          合計
+                          合計營收
                         </span>
                         <span
                           style={{
@@ -1394,6 +1509,36 @@ function OverviewDashboard({
                           {fmt$(total)}
                         </span>
                       </div>
+                      {netE && netE.value !== undefined && (
+                        <div
+                          style={{
+                            marginTop: 4,
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 10,
+                              color: goldC,
+                              fontWeight: 700,
+                            }}
+                          >
+                            淨利
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 800,
+                              fontFamily: mono,
+                              color: netE.value >= 0 ? goldC : "var(--dn)",
+                            }}
+                          >
+                            {fmt$(netE.value)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   );
                 }}
@@ -1416,6 +1561,18 @@ function OverviewDashboard({
                 maxBarSize={32}
                 stackId="a"
               />
+              {showNetLine && (
+                <Line
+                  type="monotone"
+                  dataKey="net"
+                  name="淨利"
+                  stroke={goldC}
+                  strokeWidth={2}
+                  dot={{ r: 2, fill: goldC, strokeWidth: 0 }}
+                  activeDot={{ r: 4 }}
+                  connectNulls
+                />
+              )}
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -1545,43 +1702,43 @@ function OverviewDashboard({
   );
 }
 
-/* ─── Commission Panel ──────────────────────────────────────── */
-function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
+/* ─── Monthly Expense Panel（分潤／廣告費共用）──────────────── */
+function MonthlyExpensePanel({
+  title,
+  icon,
+  color = "var(--purple)",
+  values,
+  onUpdate,
+  selYear,
+  selMonth,
+  range,
+  hint,
+}) {
   const key = commKey(selYear, selMonth);
-  const isAggregated = selMonth === "All" || selYear === "All";
-  const aggregatedVal = useMemo(() => {
-    if (selYear === "All") {
-      return Object.values(commissions).reduce(
-        (s, v) => s + (v !== "" && v !== undefined ? Number(v) || 0 : 0),
-        0
-      );
-    }
-    if (selMonth === "All") {
-      return Object.entries(commissions).reduce((s, [k, v]) => {
-        if (k.startsWith(selYear + "-") && v !== "" && v !== undefined)
-          s += Number(v) || 0;
-        return s;
-      }, 0);
-    }
-    return null;
-  }, [commissions, selYear, selMonth]);
+  const isAggregated =
+    selMonth === "All" || selYear === "All" || selYear === "Custom";
+  const aggregatedVal = useMemo(
+    () =>
+      isAggregated ? periodExpense(values, selYear, selMonth, range) : null,
+    [values, selYear, selMonth, range, isAggregated]
+  );
 
-  const [local, setLocal] = useState(String(commissions[key] ?? ""));
+  const [local, setLocal] = useState(String(values[key] ?? ""));
   const [focused, setFocused] = useState(false);
   useEffect(() => {
-    setLocal(String(commissions[key] ?? ""));
-  }, [key, commissions]);
+    setLocal(String(values[key] ?? ""));
+  }, [key, values]);
   const handleBlur = () => {
     setFocused(false);
     const n = parseFloat(local);
     onUpdate(key, isNaN(n) ? "" : n);
   };
   const hasVal =
-    commissions[key] !== undefined &&
-    commissions[key] !== "" &&
-    Number(commissions[key]) > 0;
+    values[key] !== undefined && values[key] !== "" && Number(values[key]) > 0;
   const label =
-    selYear === "All"
+    selYear === "Custom"
+      ? "自訂區間"
+      : selYear === "All"
       ? "歷年"
       : selMonth === "All"
       ? `${selYear}`
@@ -1607,7 +1764,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
           marginBottom: 10,
         }}
       >
-        <Users size={12} color="var(--purple)" /> 分潤費用
+        {icon} {title}
       </div>
       <div
         style={{
@@ -1622,7 +1779,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
             fontFamily: mono,
             fontSize: 11,
             fontWeight: 700,
-            color: "var(--purple)",
+            color,
             background: "var(--s2)",
             border: "1px solid var(--s3)",
             padding: "3px 8px",
@@ -1637,7 +1794,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
               setLocal("");
               onUpdate(key, "");
             }}
-            aria-label="清除此期間分潤金額"
+            aria-label={`清除此期間${title}`}
             style={{
               border: "none",
               background: "none",
@@ -1669,7 +1826,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
               fontFamily: mono,
               fontSize: 15,
               fontWeight: 700,
-              color: aggregatedVal > 0 ? "var(--purple)" : "var(--t3)",
+              color: aggregatedVal > 0 ? color : "var(--t3)",
             }}
           >
             {fmt$(aggregatedVal)}
@@ -1697,7 +1854,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
             min="0"
             value={local}
             placeholder="0"
-            aria-label="此期間分潤費用"
+            aria-label={`此期間${title}`}
             onChange={(e) => setLocal(e.target.value)}
             onFocus={() => setFocused(true)}
             onBlur={handleBlur}
@@ -1706,7 +1863,7 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
               width: "100%",
               textAlign: "right",
               paddingLeft: 36,
-              borderColor: focused ? "var(--purple)" : "var(--s3)",
+              borderColor: focused ? color : "var(--s3)",
             }}
           />
         </div>
@@ -1720,8 +1877,10 @@ function CommissionPanel({ commissions, onUpdate, selYear, selMonth }) {
         }}
       >
         {isAggregated
-          ? "各月分潤加總，切換到特定月份可編輯"
-          : "此期間分潤費用將從最終淨利扣除"}
+          ? selYear === "Custom"
+            ? "自訂區間以整月合計，切換到特定月份可編輯"
+            : "各月合計，切換到特定月份可編輯"
+          : hint}
       </p>
     </div>
   );
@@ -1849,7 +2008,7 @@ const CmpVal = ({ label, cur, prev }) => {
 
 function PeriodCompare({ monthly, sY, sM }) {
   const data = useMemo(() => {
-    if (!monthly || sY === "All") return null;
+    if (!monthly || sY === "All" || sY === "Custom") return null;
     const sumYear = (y) => {
       let rev = 0,
         net = 0,
@@ -2098,7 +2257,7 @@ function OrderDetail({ order, isSL, slFp, slCosts, spCosts }) {
 }
 
 /* ─── Main App ───────────────────────────────────────────────── */
-export default function App() {
+function ProfitCenter() {
   const [theme, setTheme] = useState(() => gl(SK.theme, "light"));
   const [platform, setPlatform] = useState(() => gl(SK.platform, "overview"));
   const [slFp, setSlFp] = useState(() => gl(SK.slFp, DEFAULT_FP_SL));
@@ -2108,14 +2267,19 @@ export default function App() {
   const [slOrders, setSlOrders] = useState(() => gl(SK.slOrders, {}));
   const [spOrders, setSpOrders] = useState(() => gl(SK.spOrders, {}));
   const [commissions, setCommissions] = useState(() => gl(SK.commissions, {}));
+  const [slAd, setSlAd] = useState(() => gl(SK.slAd, {}));
+  const [spAd, setSpAd] = useState(() => gl(SK.spAd, {}));
 
-  const [notif, setNotif] = useState(null);
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
+  const [confirmBox, setConfirmBox] = useState(null);
   const [sY, setSY] = useState("All");
   const [sM, setSM] = useState("All");
+  const [range, setRange] = useState({ from: "", to: "" });
   const [search, setSearch] = useState("");
   const [mSearch, setMSearch] = useState("");
+  const dSearch = useDebounced(search);
+  const dMSearch = useDebounced(mSearch);
   const [lossOnly, setLossOnly] = useState(false);
   const [sync, setSync] = useState("connecting");
   const [cReady, setCReady] = useState(false);
@@ -2146,21 +2310,21 @@ export default function App() {
   });
   const [lastSyncAt, setLastSyncAt] = useState(0);
 
+  /* toast：帶動作（復原）的通知給較長的 10 秒，時間到一樣自動消失 */
   const toast = useCallback((msg, opts = {}) => {
     const id = ++toastIdRef.current;
-    const { type = "info", duration = 3500, action, actionLabel } = opts;
+    const { type = "info", action, actionLabel } = opts;
+    const duration = opts.duration ?? (action ? 10000 : 3500);
     setToasts((p) => [
       ...p,
       { id, msg, type, duration, action, actionLabel, removing: false },
     ]);
-    if (!action) {
-      setTimeout(() => {
-        setToasts((p) =>
-          p.map((t) => (t.id === id ? { ...t, removing: true } : t))
-        );
-        setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 350);
-      }, duration);
-    }
+    setTimeout(() => {
+      setToasts((p) =>
+        p.map((t) => (t.id === id ? { ...t, removing: true } : t))
+      );
+      setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 350);
+    }, duration);
   }, []);
   const removeToast = useCallback((id) => {
     setToasts((p) =>
@@ -2211,12 +2375,12 @@ export default function App() {
   useEffect(() => {
     persist(SK.commissions, commissions);
   }, [commissions, persist]);
-
-  const msg = (m) => {
-    setNotif(m);
-    clearTimeout(msg._t);
-    msg._t = setTimeout(() => setNotif(null), 3500);
-  };
+  useEffect(() => {
+    persist(SK.slAd, slAd);
+  }, [slAd, persist]);
+  useEffect(() => {
+    persist(SK.spAd, spAd);
+  }, [spAd, persist]);
 
   /* Firebase init */
   useEffect(() => {
@@ -2447,6 +2611,8 @@ export default function App() {
             if (metaData.slCosts) setSlCosts(metaData.slCosts);
             if (metaData.spCosts) setSpCosts(metaData.spCosts);
             if (metaData.commissions) setCommissions(metaData.commissions);
+            if (metaData.slAd) setSlAd(metaData.slAd);
+            if (metaData.spAd) setSpAd(metaData.spAd);
             lRMeta.current = rMs;
             lL.current = rMs;
             setLastSyncAt(Date.now());
@@ -2574,6 +2740,8 @@ export default function App() {
           slCosts,
           spCosts,
           commissions,
+          slAd,
+          spAd,
           updatedAtMs: ms,
           updatedBy: meta.current.clientId,
         });
@@ -2654,6 +2822,8 @@ export default function App() {
     slOrders,
     spOrders,
     commissions,
+    slAd,
+    spAd,
     aReady,
     cReady,
   ]);
@@ -2953,13 +3123,23 @@ export default function App() {
         else processSPParsed(parseCSV(d2));
       }
     };
-    rd.onload = (ev) => exec(ev.target.result, isX);
+    rd.onload = (ev) => {
+      try {
+        exec(ev.target.result, isX);
+      } catch (err) {
+        console.error("[Parse Error]", err);
+        toast("報表解析失敗：" + err.message, { type: "error", duration: 8000 });
+      }
+    };
+    rd.onerror = () => toast("檔案讀取失敗，請重試", { type: "error" });
     if (isX) {
       if (typeof window.XLSX === "undefined") {
         const s2 = document.createElement("script");
         s2.src =
           "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
         s2.onload = () => rd.readAsArrayBuffer(f);
+        s2.onerror = () =>
+          toast("XLSX 解析器載入失敗，請確認網路後重試", { type: "error" });
         document.head.appendChild(s2);
       } else rd.readAsArrayBuffer(f);
     } else rd.readAsText(f);
@@ -2969,6 +3149,22 @@ export default function App() {
     processFile(e.target.files?.[0]);
     e.target.value = "";
   };
+
+  /* ─── 期間過濾（年月／自訂區間共用） ────────────────────── */
+  const inPeriod = useCallback(
+    (d) => {
+      const s = String(d || "");
+      if (sY === "Custom") {
+        if (range.from && s < range.from) return false;
+        if (range.to && s > range.to) return false;
+        return true;
+      }
+      if (sY !== "All" && !s.startsWith(sY)) return false;
+      if (sM !== "All" && !s.startsWith(`${sY}-${sM}`)) return false;
+      return true;
+    },
+    [sY, sM, range]
+  );
 
   /* ─── Shopline Data Processing ────────────────────────────── */
   const slData = useMemo(() => {
@@ -3020,10 +3216,7 @@ export default function App() {
       returnRev: 0,
     };
     const fl = all.filter((o) => {
-      const oy = o.date.substring(0, 4),
-        om = o.date.substring(5, 7);
-      if (sY !== "All" && oy !== sY) return false;
-      if (sM !== "All" && om !== sM) return false;
+      if (!inPeriod(o.date)) return false;
       const cx = o.status.includes("取消") || o.status.includes("刪除");
       t.rawTotal += o.revenue;
       if (cx) {
@@ -3084,13 +3277,20 @@ export default function App() {
           ...order,
           pFee: pf,
           sCost: sc2,
+          plFee: plf,
+          channelFee: pf + sc2 + plf,
+          opx,
+          taxAmt: tax,
           net,
           oCost: oc,
           currentOrderContribution: cm,
         };
       })
       .sort((a, b) => b.date.localeCompare(a.date));
-    const tnm = t.rev > 0 ? t.net / t.rev : 0;
+    /* 廣告費為期間層級費用，從最終淨利實扣（單筆訂單淨利不分攤） */
+    const ad = periodExpense(slAd, sY, sM, range);
+    const netFinal = t.net - ad;
+    const tnm = t.rev > 0 ? netFinal / t.rev : 0;
     return {
       years,
       months,
@@ -3099,6 +3299,8 @@ export default function App() {
       matrixList: Object.values(mm).sort((a, b) => b.soldQty - a.soldQty),
       summary: {
         ...t,
+        net: netFinal,
+        adSpend: ad,
         trueNetMargin: tnm,
         gapVal: (tnm - tnr) * 100,
         targetNetRate: tnr,
@@ -3110,7 +3312,7 @@ export default function App() {
         returnRate: t.valid > 0 ? t.returnCount / t.valid : 0,
       },
     };
-  }, [slOrders, sY, sM, slFp, slCosts]);
+  }, [slOrders, sY, sM, slFp, slCosts, slAd, range, inPeriod]);
 
   /* ─── Shopee Data Processing ──────────────────────────────── */
   const spData = useMemo(() => {
@@ -3146,12 +3348,7 @@ export default function App() {
       lossN = 0,
       refundN = 0,
       refundG = 0;
-    const filtered = all.filter((o) => {
-      if (sY !== "All" && !String(o.date).startsWith(sY)) return false;
-      if (sM !== "All" && !String(o.date).startsWith(`${sY}-${sM}`))
-        return false;
-      return true;
-    });
+    const filtered = all.filter((o) => inPeriod(o.date));
     const orderList = filtered
       .map((order) => {
         const fin = spOrderFin(order, spFp, spCosts);
@@ -3174,9 +3371,13 @@ export default function App() {
               option: item.option,
               soldQty: 0,
               estProfit: 0,
+              totalRevenue: 0,
+              totalCost: 0,
             };
           prods[item.key].soldQty += item.qty || 1;
           const ir = numOrZero(item.activityPrice) * (item.qty || 1);
+          prods[item.key].totalRevenue += ir;
+          prods[item.key].totalCost += ic * (item.qty || 1);
           prods[item.key].estProfit +=
             ir -
             ic * (item.qty || 1) -
@@ -3196,6 +3397,7 @@ export default function App() {
           ...order,
           localGross: fin.gross,
           totalOrderFee: fin.fee,
+          channelFee: fin.fee + fin.voucher,
           orderCost: fin.oCost,
           netIncome: fin.net,
           grossProfit: fin.gp,
@@ -3205,22 +3407,11 @@ export default function App() {
         };
       })
       .filter(Boolean);
-    const ck = commKey(sY, sM);
-    let comm = 0;
-    if (commissions[ck] !== undefined && commissions[ck] !== "") {
-      comm = Number(commissions[ck]);
-    } else if (sM === "All" && sY !== "All") {
-      Object.entries(commissions).forEach(([k, v]) => {
-        if (k.startsWith(sY + "-") && v !== "" && v !== undefined)
-          comm += Number(v) || 0;
-      });
-    } else if (sY === "All") {
-      Object.values(commissions).forEach((v) => {
-        if (v !== "" && v !== undefined) comm += Number(v) || 0;
-      });
-    }
+    /* 分潤與廣告費皆為期間層級費用，從最終淨利實扣 */
+    const comm = periodExpense(commissions, sY, sM, range);
+    const ad = periodExpense(spAd, sY, sM, range);
     const tNetPro = tG - tV - tF - tC - tOp - tTx;
-    const afterComm = tNetPro - comm;
+    const afterComm = tNetPro - comm - ad;
     const netMargin = tG > 0 ? afterComm / tG : 0;
 
     let badge = { label: "虧損", color: "var(--dn)" };
@@ -3247,6 +3438,7 @@ export default function App() {
         tTx,
         tNetPro,
         comm,
+        ad,
         afterComm,
         netMargin,
         targetNet,
@@ -3262,9 +3454,9 @@ export default function App() {
         voucherRate: tG > 0 ? tV / tG : 0,
       },
     };
-  }, [spOrders, sY, sM, spFp, spCosts, commissions]);
+  }, [spOrders, sY, sM, spFp, spCosts, commissions, spAd, range, inPeriod]);
 
-  /* ─── 每月營收/淨利彙總（環比/同比用） ───────────────────── */
+  /* ─── 每月營收/淨利彙總（環比/同比用；已扣分潤與廣告費） ── */
   const slMonthly = useMemo(() => {
     const map = {};
     Object.values(slOrders).forEach((o) => {
@@ -3276,8 +3468,11 @@ export default function App() {
       map[ym].rev += o.revenue || 0;
       map[ym].net += slOrderFin(o, slFp, slCosts).net;
     });
+    Object.entries(slAd).forEach(([k, v]) => {
+      if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
+    });
     return map;
-  }, [slOrders, slFp, slCosts]);
+  }, [slOrders, slFp, slCosts, slAd]);
 
   const spMonthly = useMemo(() => {
     const map = {};
@@ -3293,8 +3488,11 @@ export default function App() {
     Object.entries(commissions).forEach(([k, v]) => {
       if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
     });
+    Object.entries(spAd).forEach(([k, v]) => {
+      if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
+    });
     return map;
-  }, [spOrders, spFp, spCosts, commissions]);
+  }, [spOrders, spFp, spCosts, commissions, spAd]);
 
   const allMonthly = useMemo(() => {
     const map = {};
@@ -3320,7 +3518,7 @@ export default function App() {
         .reverse()
     : (isSL ? slData : spData)?.years || [];
   const aM = isOverview
-    ? sY !== "All"
+    ? sY !== "All" && sY !== "Custom"
       ? [
           ...new Set(
             [
@@ -3339,7 +3537,7 @@ export default function App() {
   useEffect(() => {
     setPage(0);
     setExpandedId(null);
-  }, [lossOnly, search, orderSort, sY, sM, platform]);
+  }, [lossOnly, dSearch, orderSort, sY, sM, platform, range]);
 
   /* 首次載入資料時自動跳到最新月份（僅一次；手動切換年份會重設月份） */
   const autoJumpedRef = useRef(false);
@@ -3364,12 +3562,16 @@ export default function App() {
   const matrixList = useMemo(() => {
     const source = isSL ? slData?.matrixList : spData?.uniqueProducts;
     if (!source) return [];
+    const gmOf = (p) =>
+      p.totalRevenue > 0
+        ? (p.totalRevenue - p.totalCost) / p.totalRevenue
+        : -Infinity;
     return source
       .filter(
         (p) =>
-          !mSearch ||
-          p.name.toLowerCase().includes(mSearch.toLowerCase()) ||
-          (p.option || "").toLowerCase().includes(mSearch.toLowerCase())
+          !dMSearch ||
+          p.name.toLowerCase().includes(dMSearch.toLowerCase()) ||
+          (p.option || "").toLowerCase().includes(dMSearch.toLowerCase())
       )
       .sort((a, b) => {
         const { key, dir } = costSort;
@@ -3383,13 +3585,14 @@ export default function App() {
             ((a.profitContribution || a.estProfit || 0) -
               (b.profitContribution || b.estProfit || 0))
           );
+        if (key === "margin") return m * (gmOf(a) - gmOf(b));
         if (key === "cost")
           return (
             m * ((Number(costs[a.key]) || 0) - (Number(costs[b.key]) || 0))
           );
         return 0;
       });
-  }, [isSL, slData, spData, mSearch, costSort, costs]);
+  }, [isSL, slData, spData, dMSearch, costSort, costs]);
 
   const missCost = useMemo(() => {
     const miss = matrixList.filter((p) => {
@@ -3410,8 +3613,8 @@ export default function App() {
       .filter((o) => {
         if (lossOnly && (isSL ? o.net >= 0 : o.finalNetProfit >= 0))
           return false;
-        if (search) {
-          const t = search.toLowerCase();
+        if (dSearch) {
+          const t = dSearch.toLowerCase();
           const oid = String(o.orderId).toLowerCase();
           if (
             !oid.includes(t) &&
@@ -3433,7 +3636,7 @@ export default function App() {
             ? {
                 date: o.date,
                 revenue: o.revenue,
-                fee: o.pFee,
+                fee: o.channelFee,
                 cost: o.oCost,
                 profit: o.currentOrderContribution,
                 net: o.net,
@@ -3441,7 +3644,7 @@ export default function App() {
             : {
                 date: o.date,
                 revenue: o.localGross,
-                fee: o.totalOrderFee,
+                fee: o.channelFee,
                 cost: o.orderCost,
                 profit: o.grossProfit,
                 net: o.finalNetProfit,
@@ -3460,12 +3663,14 @@ export default function App() {
         if (key === "net") return m * ((av.net || 0) - (bv.net || 0));
         return 0;
       });
-  }, [currentData, isSL, lossOnly, search, orderSort]);
+  }, [currentData, isSL, lossOnly, dSearch, orderSort]);
 
+  /* 分頁夾住：資料變少（如重置本期）時避免停在超出範圍的頁碼 */
   const totalPages = Math.max(1, Math.ceil(filteredOrders.length / pageSize));
+  const curPage = Math.min(page, totalPages - 1);
   const pagedOrders = useMemo(
-    () => filteredOrders.slice(page * pageSize, (page + 1) * pageSize),
-    [filteredOrders, page, pageSize]
+    () => filteredOrders.slice(curPage * pageSize, (curPage + 1) * pageSize),
+    [filteredOrders, curPage, pageSize]
   );
 
   const isLocked = useMemo(() => {
@@ -3483,44 +3688,96 @@ export default function App() {
     });
   }, [currentData, isSL, slOrders, spOrders]);
 
+  /* 目前檢視期間鎖進快照的費率參數（回答「這個月當時用的是幾 %」）；
+     期間內若有多組（各月不同）會分組列出 */
+  const snapParams = useMemo(() => {
+    if (!currentData?.orderList?.length) return null;
+    const src = isSL ? slOrders : spOrders;
+    const norm = (v) =>
+      v === null || v === undefined || Number.isNaN(Number(v))
+        ? null
+        : Number(v);
+    const sets = new Map();
+    currentData.orderList.forEach((o) => {
+      const sp = src[o.orderId]?.snapshotFeeParams;
+      if (!sp) return;
+      const p = {
+        opExpense: norm(sp.opExpense),
+        tax: norm(sp.tax),
+        platformFeeRate: norm(sp.platformFeeRate),
+      };
+      const key = `${p.opExpense}|${p.tax}|${p.platformFeeRate}`;
+      if (!sets.has(key)) sets.set(key, { ...p, count: 0 });
+      sets.get(key).count++;
+    });
+    if (!sets.size) return null;
+    const list = [...sets.values()].sort((a, b) => b.count - a.count);
+    return { list, mixed: sets.size > 1 };
+  }, [currentData, isSL, slOrders, spOrders]);
+  const pct = (v) => (v === null ? "—" : `${v}%`);
+
   const toggleSnap = () => {
     if (!currentData?.orderList?.length) return;
-    if (!window.confirm(isLocked ? "解除快照？" : "鎖定本期成本？")) return;
+    const wasLocked = isLocked;
+    const apply = () => {
+      const fp = isSL ? slFp : spFp;
+      const setter = isSL ? setSlOrders : setSpOrders;
+      const src = isSL ? slOrders : spOrders;
+      const no = { ...src };
+      currentData.orderList.forEach((o) => {
+        const tg = no[o.orderId];
+        if (!tg?.items?.length) return;
+        if (wasLocked) {
+          const nx = { ...tg };
+          nx.items = tg.items.map((i) => {
+            const ni = { ...i };
+            delete ni.snapshotCost;
+            return ni;
+          });
+          delete nx.snapshotFeeParams;
+          no[o.orderId] = nx;
+        } else {
+          no[o.orderId] = {
+            ...tg,
+            snapshotFeeParams: {
+              platformFeeRate: Number(fp.platformFeeRate) ?? null,
+              opExpense: Number(fp.opExpense) ?? null,
+              tax: Number(fp.tax) ?? null,
+              targetNet: Number(fp.targetNet) ?? null,
+            },
+            items: tg.items.map((i) => ({
+              ...i,
+              snapshotCost:
+                costs[i.key] === undefined ? null : Number(costs[i.key]),
+            })),
+          };
+        }
+      });
+      setter(no);
+      toast(wasLocked ? "已解除快照" : "已鎖定本期成本快照", {
+        type: "success",
+      });
+    };
     const fp = isSL ? slFp : spFp;
-    const setter = isSL ? setSlOrders : setSpOrders;
-    const src = isSL ? slOrders : spOrders;
-    const no = { ...src };
-    currentData.orderList.forEach((o) => {
-      const tg = no[o.orderId];
-      if (!tg?.items?.length) return;
-      if (isLocked) {
-        const nx = { ...tg };
-        nx.items = tg.items.map((i) => {
-          const ni = { ...i };
-          delete ni.snapshotCost;
-          return ni;
-        });
-        delete nx.snapshotFeeParams;
-        no[o.orderId] = nx;
-      } else {
-        no[o.orderId] = {
-          ...tg,
-          snapshotFeeParams: {
-            platformFeeRate: Number(fp.platformFeeRate) ?? null,
-            opExpense: Number(fp.opExpense) ?? null,
-            tax: Number(fp.tax) ?? null,
-            targetNet: Number(fp.targetNet) ?? null,
-          },
-          items: tg.items.map((i) => ({
-            ...i,
-            snapshotCost:
-              costs[i.key] === undefined ? null : Number(costs[i.key]),
-          })),
-        };
-      }
+    const curLine = `營業費 ${fp.opExpense}%・稅率 ${fp.tax}%${
+      isSL ? `・系統費 ${fp.platformFeeRate}%` : ""
+    }`;
+    const snapLine =
+      snapParams && !snapParams.mixed
+        ? `營業費 ${pct(snapParams.list[0].opExpense)}・稅率 ${pct(
+            snapParams.list[0].tax
+          )}${isSL ? `・系統費 ${pct(snapParams.list[0].platformFeeRate)}` : ""}`
+        : snapParams
+        ? "各月不同（見側欄明細）"
+        : "—";
+    setConfirmBox({
+      title: wasLocked ? "解除快照" : "鎖定快照",
+      message: wasLocked
+        ? `原快照參數：${snapLine}\n\n解除後，本期訂單將改回以「目前」側欄參數即時計算（${curLine}）。\n\n若是要修正本期的 %：解除後先到側欄改好參數，再重新鎖定。`
+        : `鎖定後，本期訂單將固定採用目前參數：\n${curLine}\n\n之後修改側欄參數不會影響本期。若本期實際營業費 % 還不確定，可先鎖定，之後「解除 → 改 % → 重新鎖定」修正。`,
+      danger: wasLocked,
+      onOk: apply,
     });
-    setter(no);
-    msg(isLocked ? "已解除快照" : "已鎖定快照");
   };
 
   const expC = () => {
@@ -3541,17 +3798,131 @@ export default function App() {
     r.onload = (ev) => {
       try {
         setCosts((p) => ({ ...p, ...JSON.parse(ev.target.result) }));
-        msg("匯入成功");
+        toast("成本資料匯入成功", { type: "success" });
       } catch {
-        msg("匯入失敗");
+        toast("匯入失敗：JSON 格式錯誤", { type: "error" });
       }
     };
     r.readAsText(f);
     e.target.value = "";
   };
 
-  const handleComm = (key, value) =>
-    setCommissions((prev) => {
+  /* ─── 匯出本期損益報表（CSV，含 BOM 供 Excel 直開） ──────── */
+  const expReport = () => {
+    if (!currentData) return;
+    const slD0 = slData?.summary;
+    const spS0 = spData?.s;
+    const pl =
+      sY === "Custom"
+        ? `${range.from || "起"}~${range.to || "迄"}`
+        : sY === "All"
+        ? "歷年"
+        : sM === "All"
+        ? `${sY}年`
+        : `${sY}-${sM}`;
+    const esc = (s) => {
+      const v = String(s ?? "");
+      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    };
+    const r0 = Math.round;
+    const rows = [];
+    if (isSL && slD0) {
+      rows.push(
+        ["平台", "官網"],
+        ["期間", pl],
+        ["有效訂單", slD0.valid],
+        ["營收", r0(slD0.rev)],
+        ["商品成本", r0(slD0.cost)],
+        ["通路費用（金流+物流+系統）", r0(slD0.pFee + slD0.sCost + slD0.platformFee)],
+        ["營業費", r0(slD0.opExpTotal)],
+        ["稅賦", r0(slD0.taxTotal)],
+        ["廣告費", r0(slD0.adSpend)],
+        ["最終淨利", r0(slD0.net)],
+        ["淨利率", (slD0.trueNetMargin * 100).toFixed(2) + "%"],
+        []
+      );
+      rows.push([
+        "日期",
+        "單號",
+        "狀態",
+        "營收",
+        "通路費用",
+        "商品成本",
+        "通路後毛利",
+        "營業費",
+        "稅賦",
+        "單筆淨利",
+      ]);
+      currentData.orderList.forEach((o) =>
+        rows.push([
+          o.date,
+          o.orderId,
+          o.status,
+          r0(o.revenue),
+          r0(o.channelFee),
+          r0(o.oCost),
+          r0(o.currentOrderContribution),
+          r0(o.opx),
+          r0(o.taxAmt),
+          r0(o.net),
+        ])
+      );
+    } else if (spS0) {
+      rows.push(
+        ["平台", "蝦皮"],
+        ["期間", pl],
+        ["有效訂單", spS0.validN],
+        ["營收（含補貼還原）", r0(spS0.tG)],
+        ["商品成本", r0(spS0.tC)],
+        ["通路費用（手續費+賣場券）", r0(spS0.tF + spS0.tV)],
+        ["營業費", r0(spS0.tOp)],
+        ["稅賦", r0(spS0.tTx)],
+        ["分潤", r0(spS0.comm)],
+        ["廣告費", r0(spS0.ad)],
+        ["最終淨利", r0(spS0.afterComm)],
+        ["淨利率", (spS0.netMargin * 100).toFixed(2) + "%"],
+        []
+      );
+      rows.push([
+        "日期",
+        "單號",
+        "狀態",
+        "營收",
+        "通路費用",
+        "商品成本",
+        "通路後毛利",
+        "營業費",
+        "稅賦",
+        "單筆淨利",
+      ]);
+      currentData.orderList.forEach((o) =>
+        rows.push([
+          o.date,
+          o.orderId,
+          o.status,
+          r0(o.localGross),
+          r0(o.channelFee),
+          r0(o.orderCost),
+          r0(o.grossProfit),
+          r0(o.orderOpExpense),
+          r0(o.orderTax),
+          r0(o.finalNetProfit),
+        ])
+      );
+    }
+    if (!rows.length) return;
+    const csv = "\uFEFF" + rows.map((r) => r.map(esc).join(",")).join("\r\n");
+    const b = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = `${isSL ? "官網" : "蝦皮"}損益報表_${pl}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("報表已匯出", { type: "success" });
+  };
+
+  const mkMonthlyUpd = (setter) => (key, value) =>
+    setter((prev) => {
       if (value === "" || value === null || value === undefined) {
         const n = { ...prev };
         delete n[key];
@@ -3559,11 +3930,24 @@ export default function App() {
       }
       return { ...prev, [key]: Number(value) };
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleComm = useCallback(mkMonthlyUpd(setCommissions), []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleSlAd = useCallback(mkMonthlyUpd(setSlAd), []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleSpAd = useCallback(mkMonthlyUpd(setSpAd), []);
 
   const commitCost = useCallback(
     (key, n) => {
       const setter = isSL ? setSlCosts : setSpCosts;
       setter((pr) => ({ ...pr, [key]: n }));
+    },
+    [isSL]
+  );
+  const commitFp = useCallback(
+    (field, v) => {
+      const setter = isSL ? setSlFp : setSpFp;
+      setter((p) => ({ ...p, [field]: v }));
     },
     [isSL]
   );
@@ -3604,34 +3988,6 @@ export default function App() {
       }}
     >
       <style>{CSS}</style>
-
-      {/* Notification */}
-      {notif && (
-        <div
-          role="status"
-          style={{
-            position: "fixed",
-            top: 12,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 200,
-            background: "var(--t1)",
-            color: "var(--bg)",
-            borderRadius: 10,
-            padding: "10px 20px",
-            boxShadow: "0 12px 40px rgba(0,0,0,.2)",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            fontWeight: 600,
-            fontSize: 12,
-            animation: "notifIn .25s ease both",
-          }}
-        >
-          <Zap size={13} />
-          {notif}
-        </div>
-      )}
 
       {/* Header */}
       <header
@@ -3799,20 +4155,55 @@ export default function App() {
                   {y} 年
                 </option>
               ))}
+              <option value="Custom">自訂區間</option>
             </select>
-            <select
-              value={sM}
-              onChange={(e) => setSM(e.target.value)}
-              aria-label="選擇月份"
-              style={sel}
-            >
-              <option value="All">全月份</option>
-              {aM.map((m) => (
-                <option key={m} value={m}>
-                  {m} 月
-                </option>
-              ))}
-            </select>
+            {sY === "Custom" ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <input
+                  type="date"
+                  value={range.from}
+                  aria-label="起始日期"
+                  onChange={(e) =>
+                    setRange((r) => ({ ...r, from: e.target.value }))
+                  }
+                  style={{
+                    ...sel,
+                    fontFamily: mono,
+                    fontSize: 11,
+                    padding: "5px 8px",
+                  }}
+                />
+                <span style={{ color: "var(--t4)", fontSize: 11 }}>～</span>
+                <input
+                  type="date"
+                  value={range.to}
+                  aria-label="結束日期"
+                  onChange={(e) =>
+                    setRange((r) => ({ ...r, to: e.target.value }))
+                  }
+                  style={{
+                    ...sel,
+                    fontFamily: mono,
+                    fontSize: 11,
+                    padding: "5px 8px",
+                  }}
+                />
+              </div>
+            ) : (
+              <select
+                value={sM}
+                onChange={(e) => setSM(e.target.value)}
+                aria-label="選擇月份"
+                style={sel}
+              >
+                <option value="All">全月份</option>
+                {aM.map((m) => (
+                  <option key={m} value={m}>
+                    {m} 月
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
       </header>
@@ -3907,8 +4298,8 @@ export default function App() {
                   }}
                 >
                   {isSL ? slD?.valid : spS?.validN} 筆 ·{" "}
-                  {sY === "All" ? "歷年" : sY}
-                  {sM !== "All" ? `/${sM}` : ""}
+                  {sY === "All" ? "歷年" : sY === "Custom" ? "自訂區間" : sY}
+                  {sM !== "All" && sY !== "Custom" ? `/${sM}` : ""}
                 </div>
               )}
 
@@ -3927,6 +4318,59 @@ export default function App() {
                 >
                   <Settings size={12} /> 財務模型參數
                 </div>
+                {snapParams && (
+                  <div
+                    style={{
+                      background: "var(--wn-dim)",
+                      border: "1px solid var(--wn-bdr)",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      marginBottom: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 800,
+                        color: "var(--wn)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        marginBottom: 4,
+                      }}
+                    >
+                      <Lock size={10} />
+                      {isLocked ? "本期已鎖定快照" : "本期部分訂單帶快照"}
+                      {snapParams.mixed ? "（各月參數不同）" : ""}
+                    </div>
+                    {snapParams.list.map((sp, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          fontSize: 10,
+                          color: "var(--t2)",
+                          fontFamily: mono,
+                          lineHeight: 1.8,
+                        }}
+                      >
+                        營業費 {pct(sp.opExpense)}・稅 {pct(sp.tax)}
+                        {isSL ? `・系統費 ${pct(sp.platformFeeRate)}` : ""}
+                        {snapParams.mixed ? `（${sp.count} 筆）` : ""}
+                      </div>
+                    ))}
+                    <div
+                      style={{
+                        fontSize: 9,
+                        color: "var(--t4)",
+                        marginTop: 4,
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      鎖定的訂單以上述參數計算，下方輸入僅影響未鎖定期間。
+                      要修正本期 %：解除快照 → 改參數 → 重新鎖定。
+                    </div>
+                  </div>
+                )}
                 {(isSL
                   ? [
                       { l: "淨利目標", n: "targetNet" },
@@ -3962,23 +4406,11 @@ export default function App() {
                     <div
                       style={{ display: "flex", alignItems: "center", gap: 4 }}
                     >
-                      <input
-                        type="number"
-                        step="0.1"
-                        aria-label={`${item.l}（%）`}
+                      <FpInput
+                        field={item.n}
+                        label={`${item.l}（%）`}
                         value={isSL ? slFp[item.n] : spFp[item.n]}
-                        onChange={(e) =>
-                          isSL
-                            ? setSlFp((p) => ({
-                                ...p,
-                                [item.n]: e.target.value,
-                              }))
-                            : setSpFp((p) => ({
-                                ...p,
-                                [item.n]: e.target.value,
-                              }))
-                        }
-                        style={{ ...inp, width: 60, fontSize: 12 }}
+                        onCommit={commitFp}
                       />
                       <span style={{ fontSize: 11, color: "var(--t4)" }}>
                         %
@@ -3990,11 +4422,31 @@ export default function App() {
 
               {/* Commission Panel (Shopee only) */}
               {!isSL && currentData && (
-                <CommissionPanel
-                  commissions={commissions}
+                <MonthlyExpensePanel
+                  title="分潤費用"
+                  icon={<Users size={12} color="var(--purple)" />}
+                  color="var(--purple)"
+                  values={commissions}
                   onUpdate={handleComm}
                   selYear={sY}
                   selMonth={sM}
+                  range={range}
+                  hint="此期間分潤費用將從最終淨利扣除"
+                />
+              )}
+
+              {/* Ad Spend Panel (both platforms) */}
+              {currentData && (
+                <MonthlyExpensePanel
+                  title={isSL ? "廣告費（Google Ads 等）" : "廣告費（蝦皮廣告）"}
+                  icon={<Megaphone size={12} color="var(--orange)" />}
+                  color="var(--orange)"
+                  values={isSL ? slAd : spAd}
+                  onUpdate={isSL ? handleSlAd : handleSpAd}
+                  selYear={sY}
+                  selMonth={sM}
+                  range={range}
+                  hint="此期間實際廣告支出將從最終淨利扣除"
                 />
               )}
 
@@ -4004,45 +4456,44 @@ export default function App() {
                   v="primary"
                   onClick={() => {
                     const src = isSL ? slOrders : spOrders;
-                    const toDelete = Object.keys(src).filter((k) => {
-                      const d = String(src[k].date || "");
-                      if (sY !== "All" && !d.startsWith(sY)) return false;
-                      if (sM !== "All" && !d.startsWith(`${sY}-${sM}`))
-                        return false;
-                      return true;
-                    });
+                    const toDelete = Object.keys(src).filter((k) =>
+                      inPeriod(String(src[k].date || ""))
+                    );
                     if (!toDelete.length) {
-                      msg("本期無訂單可清除");
+                      toast("本期無訂單可清除", { type: "warning" });
                       return;
                     }
                     const periodLabel =
-                      sY === "All"
+                      sY === "Custom"
+                        ? `${range.from || "起"} ～ ${range.to || "迄"}`
+                        : sY === "All"
                         ? "歷年"
                         : sM === "All"
                         ? `${sY} 年`
                         : `${sY}/${sM}`;
-                    if (
-                      !window.confirm(
-                        `重置「${periodLabel}」${
-                          isSL ? "官網" : "蝦皮"
-                        }訂單（共 ${
-                          toDelete.length
-                        } 筆）？\n\n舊資料將被清除，請重新匯入該期報表。`
-                      )
-                    )
-                      return;
-                    const removed = {};
-                    toDelete.forEach((k) => {
-                      removed[k] = src[k];
-                    });
-                    const updated = { ...src };
-                    toDelete.forEach((k) => delete updated[k]);
-                    const setter = isSL ? setSlOrders : setSpOrders;
-                    setter(updated);
-                    toast(`已清除 ${toDelete.length} 筆訂單`, {
-                      type: "info",
-                      action: () => setter((p) => ({ ...p, ...removed })),
-                      actionLabel: "復原",
+                    setConfirmBox({
+                      title: "重置本期訂單",
+                      message: `將清除「${periodLabel}」的${
+                        isSL ? "官網" : "蝦皮"
+                      }訂單共 ${
+                        toDelete.length
+                      } 筆。\n清除後 10 秒內可在右下角通知按「復原」，或重新匯入該期報表。`,
+                      danger: true,
+                      onOk: () => {
+                        const removed = {};
+                        toDelete.forEach((k) => {
+                          removed[k] = src[k];
+                        });
+                        const updated = { ...src };
+                        toDelete.forEach((k) => delete updated[k]);
+                        const setter = isSL ? setSlOrders : setSpOrders;
+                        setter(updated);
+                        toast(`已清除 ${toDelete.length} 筆訂單`, {
+                          type: "info",
+                          action: () => setter((p) => ({ ...p, ...removed })),
+                          actionLabel: "復原",
+                        });
+                      },
                     });
                   }}
                   style={{ flex: 1, justifyContent: "center", fontSize: 10 }}
@@ -4067,6 +4518,7 @@ export default function App() {
                 theme={theme}
                 sY={sY}
                 sM={sM}
+                range={range}
                 onNavigate={(id) => {
                   setPlatform(id);
                   if (id === "shopline" && slData?.years?.length) {
@@ -4167,6 +4619,22 @@ export default function App() {
                           <Lock size={11} />{" "}
                           {isLocked ? "解除快照" : "鎖定快照"}
                         </Btn>
+                        {isLocked && snapParams && (
+                          <Tag v="default">
+                            <Lock size={10} />{" "}
+                            {snapParams.mixed
+                              ? "快照參數各月不同（見側欄）"
+                              : `快照 營業費 ${pct(
+                                  snapParams.list[0].opExpense
+                                )}・稅 ${pct(snapParams.list[0].tax)}`}
+                          </Tag>
+                        )}
+                        {slD.adSpend > 0 && (
+                          <Tag v="warn">
+                            <Megaphone size={10} /> 已扣廣告費{" "}
+                            {fmt$(slD.adSpend)}
+                          </Tag>
+                        )}
                         <span
                           style={{
                             fontSize: 12,
@@ -4211,7 +4679,7 @@ export default function App() {
                               fontWeight: 700,
                               letterSpacing: "-0.04em",
                               fontFamily: mono,
-                              color: "var(--t1)",
+                              color: slD.net >= 0 ? "var(--t1)" : "var(--dn)",
                             }}
                           >
                             {fmt$(slD.net)}
@@ -4225,6 +4693,8 @@ export default function App() {
                           >
                             原始營收：{fmt$(slD.rawTotal)} ｜ 取消：
                             {fmt$(slD.cancelledTotal)}
+                            {slD.adSpend > 0 &&
+                              ` ｜ 廣告費前：${fmt$(slD.net + slD.adSpend)}`}
                           </div>
                           <PeriodCompare
                             monthly={slMonthly}
@@ -4280,7 +4750,7 @@ export default function App() {
                           </div>
                         </div>
                       </div>
-                      {/* Waterfall */}
+                      {/* Waterfall：通路後毛利 − 營業費 − 稅賦 −（廣告費）= 淨利，逐項可驗算 */}
                       <div
                         style={{
                           marginTop: 28,
@@ -4309,15 +4779,21 @@ export default function App() {
                         >
                           {[
                             {
-                              l: "毛利",
-                              v:
-                                slD.contributionMargin +
-                                slD.opExpTotal +
-                                slD.taxTotal,
+                              l: "通路後毛利",
+                              v: slD.contributionMargin,
                               c: "var(--t1)",
                             },
                             { l: "營業費", v: -slD.opExpTotal, c: "var(--dn)" },
                             { l: "稅賦", v: -slD.taxTotal, c: "var(--dn)" },
+                            ...(slD.adSpend > 0
+                              ? [
+                                  {
+                                    l: "廣告費",
+                                    v: -slD.adSpend,
+                                    c: "var(--dn)",
+                                  },
+                                ]
+                              : []),
                             {
                               l: "淨利",
                               v: slD.net,
@@ -4630,9 +5106,24 @@ export default function App() {
                           <Lock size={11} />{" "}
                           {isLocked ? "解除快照" : "鎖定快照"}
                         </Btn>
+                        {isLocked && snapParams && (
+                          <Tag v="default">
+                            <Lock size={10} />{" "}
+                            {snapParams.mixed
+                              ? "快照參數各月不同（見側欄）"
+                              : `快照 營業費 ${pct(
+                                  snapParams.list[0].opExpense
+                                )}・稅 ${pct(snapParams.list[0].tax)}`}
+                          </Tag>
+                        )}
                         {spS.comm > 0 && (
                           <Tag v="warn">
                             <Users size={10} /> 已扣分潤 {fmt$(spS.comm)}
+                          </Tag>
+                        )}
+                        {spS.ad > 0 && (
+                          <Tag v="warn">
+                            <Megaphone size={10} /> 已扣廣告費 {fmt$(spS.ad)}
                           </Tag>
                         )}
                         {spS.refundN > 0 && (
@@ -4676,7 +5167,7 @@ export default function App() {
                           >
                             {fmt$(spS.afterComm)}
                           </div>
-                          {spS.comm > 0 && (
+                          {(spS.comm > 0 || spS.ad > 0) && (
                             <div
                               style={{
                                 fontSize: 12,
@@ -4684,7 +5175,7 @@ export default function App() {
                                 marginTop: 6,
                               }}
                             >
-                              分潤前：{fmt$(spS.tNetPro)}
+                              扣分潤／廣告前：{fmt$(spS.tNetPro)}
                             </div>
                           )}
                           <PeriodCompare
@@ -4732,7 +5223,7 @@ export default function App() {
                           </div>
                         </div>
                       </div>
-                      {/* Waterfall */}
+                      {/* Waterfall：通路後毛利 − 營業費 − 稅賦 −（分潤/廣告）= 淨利，逐項可驗算 */}
                       <div
                         style={{
                           marginTop: 28,
@@ -4761,19 +5252,16 @@ export default function App() {
                         >
                           {[
                             {
-                              l: "毛利",
-                              v:
-                                spS.tG -
-                                spS.tC -
-                                spS.tF -
-                                spS.tV +
-                                spS.tOp +
-                                spS.tTx,
+                              l: "通路後毛利",
+                              v: spS.tG - spS.tV - spS.tF - spS.tC,
                             },
                             { l: "營業費", v: -spS.tOp, neg: true },
                             { l: "稅賦", v: -spS.tTx, neg: true },
                             ...(spS.comm > 0
                               ? [{ l: "分潤", v: -spS.comm, neg: true }]
+                              : []),
+                            ...(spS.ad > 0
+                              ? [{ l: "廣告費", v: -spS.ad, neg: true }]
                               : []),
                             { l: "淨利", v: spS.afterComm, bold: true },
                           ].map((item, i, arr) => (
@@ -4864,10 +5352,18 @@ export default function App() {
                               ? "var(--sp-accent)"
                               : "var(--dn)",
                           h:
-                            spS.comm > 0
-                              ? `-${fmt$(spS.comm)} 分潤`
+                            spS.comm > 0 || spS.ad > 0
+                              ? `已扣 ${[
+                                  spS.comm > 0 ? `分潤 ${fmt$(spS.comm)}` : "",
+                                  spS.ad > 0 ? `廣告 ${fmt$(spS.ad)}` : "",
+                                ]
+                                  .filter(Boolean)
+                                  .join("、")}`
                               : `淨利率 ${fmtP(spS.netMargin)}`,
-                          hc: spS.comm > 0 ? "var(--purple)" : "var(--t4)",
+                          hc:
+                            spS.comm > 0 || spS.ad > 0
+                              ? "var(--purple)"
+                              : "var(--t4)",
                           border: "var(--sp-accent)",
                         },
                       ].map((k, i) => (
@@ -5129,7 +5625,7 @@ export default function App() {
                       style={{
                         width: "100%",
                         borderCollapse: "collapse",
-                        minWidth: 680,
+                        minWidth: 760,
                       }}
                     >
                       <thead>
@@ -5191,6 +5687,24 @@ export default function App() {
                             淨利貢獻
                           </SortTh>
                           <SortTh
+                            sortKey="margin"
+                            currentSort={costSort}
+                            onSort={(k) =>
+                              setCostSort((p) => ({
+                                key: k,
+                                dir:
+                                  p.key === k
+                                    ? p.dir === "desc"
+                                      ? "asc"
+                                      : "desc"
+                                    : "desc",
+                              }))
+                            }
+                            align="right"
+                          >
+                            毛利率
+                          </SortTh>
+                          <SortTh
                             sortKey="cost"
                             currentSort={costSort}
                             onSort={(k) =>
@@ -5218,7 +5732,7 @@ export default function App() {
                         {!matrixList.length ? (
                           <tr>
                             <td
-                              colSpan={6}
+                              colSpan={7}
                               style={{
                                 ...td2,
                                 textAlign: "center",
@@ -5239,6 +5753,11 @@ export default function App() {
                               if (isFirstMiss) missFound = true;
                               const profitVal =
                                 p.profitContribution ?? p.estProfit ?? 0;
+                              const gmVal =
+                                p.totalRevenue > 0
+                                  ? (p.totalRevenue - p.totalCost) /
+                                    p.totalRevenue
+                                  : null;
                               return (
                                 <tr
                                   key={p.key}
@@ -5281,6 +5800,26 @@ export default function App() {
                                   >
                                     {fmt$(profitVal)}
                                   </td>
+                                  <td
+                                    style={{
+                                      ...td2,
+                                      textAlign: "right",
+                                      fontWeight: 600,
+                                      fontFamily: mono,
+                                      color:
+                                        gmVal === null
+                                          ? "var(--t4)"
+                                          : gmVal < 0
+                                          ? "var(--dn)"
+                                          : gmVal < 0.35
+                                          ? "var(--wn)"
+                                          : "var(--t1)",
+                                    }}
+                                  >
+                                    {gmVal === null
+                                      ? "—"
+                                      : `${(gmVal * 100).toFixed(1)}%`}
+                                  </td>
                                   <td style={{ ...td2, textAlign: "right" }}>
                                     <div
                                       style={{
@@ -5316,13 +5855,23 @@ export default function App() {
                                     <Btn
                                       v="ghost"
                                       aria-label={`刪除 ${p.name} 的成本設定`}
-                                      onClick={() => {
-                                        if (window.confirm("確定刪除？")) {
-                                          const n = { ...costs };
-                                          delete n[p.key];
-                                          setCosts(n);
-                                        }
-                                      }}
+                                      onClick={() =>
+                                        setConfirmBox({
+                                          title: "刪除成本設定",
+                                          message: `確定刪除「${p.name}${
+                                            p.option &&
+                                            p.option !== "標準規格"
+                                              ? `（${p.option}）`
+                                              : ""
+                                          }」的單位成本？`,
+                                          danger: true,
+                                          onOk: () => {
+                                            const n = { ...costs };
+                                            delete n[p.key];
+                                            setCosts(n);
+                                          },
+                                        })
+                                      }
                                       style={{ padding: "2px" }}
                                     >
                                       <Trash2 size={12} color="var(--t4)" />
@@ -5377,6 +5926,9 @@ export default function App() {
                         flexWrap: "wrap",
                       }}
                     >
+                      <Btn onClick={expReport}>
+                        <Download size={12} /> 匯出報表
+                      </Btn>
                       <div style={{ position: "relative" }}>
                         <Search
                           size={13}
@@ -5503,7 +6055,7 @@ export default function App() {
                             }
                             align="right"
                           >
-                            手續費
+                            通路費用
                           </SortTh>
                           <SortTh
                             sortKey="cost"
@@ -5568,10 +6120,7 @@ export default function App() {
                               ? o.net < 0
                               : o.finalNetProfit < 0;
                             const rev = isSL ? o.revenue : o.localGross;
-                            const fee = isSL
-                              ? o.pFee +
-                                o.revenue * ((slFp.platformFeeRate || 1) / 100)
-                              : o.totalOrderFee;
+                            const fee = o.channelFee;
                             const cost = isSL ? o.oCost : o.orderCost;
                             const gross = isSL
                               ? o.currentOrderContribution
@@ -5774,9 +6323,9 @@ export default function App() {
                             fontFamily: mono,
                           }}
                         >
-                          {page * pageSize + 1}–
+                          {curPage * pageSize + 1}–
                           {Math.min(
-                            (page + 1) * pageSize,
+                            (curPage + 1) * pageSize,
                             filteredOrders.length
                           )}{" "}
                           / {filteredOrders.length} 筆
@@ -5813,18 +6362,23 @@ export default function App() {
                         }}
                       >
                         {[
-                          { label: "«", aria: "第一頁", action: () => setPage(0) },
+                          {
+                            label: "«",
+                            aria: "第一頁",
+                            action: () => setPage(0),
+                          },
                           {
                             label: "‹",
                             aria: "上一頁",
-                            action: () => setPage((p) => Math.max(0, p - 1)),
+                            action: () =>
+                              setPage(Math.max(0, curPage - 1)),
                           },
                           null,
                           {
                             label: "›",
                             aria: "下一頁",
                             action: () =>
-                              setPage((p) => Math.min(totalPages - 1, p + 1)),
+                              setPage(Math.min(totalPages - 1, curPage + 1)),
                           },
                           {
                             label: "»",
@@ -5843,7 +6397,7 @@ export default function App() {
                                 padding: "0 10px",
                               }}
                             >
-                              {page + 1} / {totalPages}
+                              {curPage + 1} / {totalPages}
                             </span>
                           ) : (
                             <Btn
@@ -5871,6 +6425,81 @@ export default function App() {
           </main>
         </div>
       </div>
+
+      {/* Confirm Dialog */}
+      {confirmBox && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={confirmBox.title}
+          onClick={() => setConfirmBox(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 300,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setConfirmBox(null);
+            }}
+            style={{
+              background: "var(--s1)",
+              border: "1px solid var(--s3)",
+              borderRadius: 14,
+              padding: "22px 24px",
+              maxWidth: 400,
+              width: "100%",
+              boxShadow: "0 24px 80px rgba(0,0,0,.35)",
+              animation: "dlgIn .18s ease both",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 800,
+                marginBottom: 8,
+                color: "var(--t1)",
+              }}
+            >
+              {confirmBox.title}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--t2)",
+                lineHeight: 1.7,
+                whiteSpace: "pre-wrap",
+                marginBottom: 18,
+              }}
+            >
+              {confirmBox.message}
+            </div>
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}
+            >
+              <Btn onClick={() => setConfirmBox(null)}>取消</Btn>
+              <Btn
+                v={confirmBox.danger ? "danger" : "primary"}
+                autoFocus
+                onClick={() => {
+                  const fn = confirmBox.onOk;
+                  setConfirmBox(null);
+                  fn?.();
+                }}
+              >
+                確定
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast Container */}
       <div
@@ -5974,5 +6603,97 @@ export default function App() {
         })}
       </div>
     </div>
+  );
+}
+
+/* ─── Error Boundary：單筆資料異常不至於整頁白屏 ────────────── */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { err: null };
+  }
+  static getDerivedStateFromError(err) {
+    return { err };
+  }
+  componentDidCatch(err, info) {
+    console.error("[ErrorBoundary]", err, info);
+  }
+  render() {
+    if (this.state.err) {
+      return (
+        <div
+          style={{
+            minHeight: "100vh",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 14,
+            background: "#F8F8F6",
+            color: "#1A1A18",
+            fontFamily: "'Inter','Noto Sans TC',sans-serif",
+            padding: 24,
+            textAlign: "center",
+          }}
+        >
+          <div style={{ fontSize: 40 }}>⚠️</div>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>
+            畫面發生錯誤，資料不受影響
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "#8E8E84",
+              maxWidth: 480,
+              lineHeight: 1.7,
+              fontFamily: "monospace",
+              wordBreak: "break-all",
+            }}
+          >
+            {String(this.state.err?.message || this.state.err)}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={() => this.setState({ err: null })}
+              style={{
+                border: "1px solid #D8D8D2",
+                background: "#FFFFFF",
+                borderRadius: 8,
+                padding: "8px 18px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              重試
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                border: "1px solid rgba(26,107,60,0.18)",
+                background: "rgba(26,107,60,0.06)",
+                color: "#1A6B3C",
+                borderRadius: 8,
+                padding: "8px 18px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              重新整理頁面
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <ProfitCenter />
+    </ErrorBoundary>
   );
 }
