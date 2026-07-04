@@ -781,7 +781,20 @@ function OverviewDashboard({
       const curYm = `${now.getFullYear()}-${String(
         now.getMonth() + 1
       ).padStart(2, "0")}`;
-      if (`${sY}-${sM}` === curYm && now.getDate() >= 7) {
+      if (`${sY}-${sM}` === curYm) {
+        /* 進度基準用「已匯入資料的最後一天」而非今天：
+           報表是手動匯入的，晚幾天看不該被誤判為落後 */
+        let lastDay = 0;
+        [slOrders, spOrders].forEach((src) =>
+          Object.values(src || {}).forEach((o) => {
+            const d = String(o.date || "");
+            if (d.startsWith(curYm)) {
+              const dd = Number(d.substring(8, 10)) || 0;
+              if (dd > lastDay) lastDay = dd;
+            }
+          })
+        );
+        const effDay = Math.min(now.getDate(), lastDay);
         const mNum = Number(sM);
         const prevYm =
           mNum === 1
@@ -793,9 +806,9 @@ function OverviewDashboard({
           now.getMonth() + 1,
           0
         ).getDate();
-        const frac = now.getDate() / daysInM;
+        const frac = effDay / daysInM;
         const curRev = (slD?.rev || 0) + (spS?.tG || 0);
-        if (prevRev > 0 && frac > 0 && curRev > 0) {
+        if (effDay >= 7 && prevRev > 0 && frac > 0 && curRev > 0) {
           const pace = curRev / (prevRev * frac);
           if (pace < 0.9)
             list.push({
@@ -803,7 +816,7 @@ function OverviewDashboard({
               platform: "全站",
               msg: `本月營收進度僅為上月同期的 ${(pace * 100).toFixed(
                 0
-              )}%（截至 ${now.getDate()} 日），留意月底達成`,
+              )}%（依已匯入資料，截至 ${effDay} 日），留意月底達成`,
             });
           else if (pace >= 1.1)
             list.push({
@@ -811,13 +824,25 @@ function OverviewDashboard({
               platform: "全站",
               msg: `本月營收進度為上月同期的 ${(pace * 100).toFixed(
                 0
-              )}%，超前上月步調`,
+              )}%（截至 ${effDay} 日），超前上月步調`,
             });
         }
       }
     }
     return list;
-  }, [slD, spS, slData, spData, slCosts, spCosts, sY, sM, allMonthly]);
+  }, [
+    slD,
+    spS,
+    slData,
+    spData,
+    slCosts,
+    spCosts,
+    sY,
+    sM,
+    allMonthly,
+    slOrders,
+    spOrders,
+  ]);
 
   /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響；
      淨利線取自 allMonthly（已扣分潤）；自訂區間因非整月，不畫淨利線 */
@@ -3991,6 +4016,14 @@ function ProfitCenter() {
         ["稅賦", r0(slD0.taxTotal)],
         ["最終淨利", r0(slD0.net)],
         ["淨利率", (slD0.trueNetMargin * 100).toFixed(2) + "%"],
+        ["平均客單價", r0(slD0.rev / (slD0.valid || 1))],
+        ["加購品營收（含於營收）", r0(slD0.addOnRev)],
+        [
+          "加購滲透率",
+          ((slD0.valid > 0 ? slD0.addOnOrders / slD0.valid : 0) * 100).toFixed(
+            1
+          ) + "%",
+        ],
         []
       );
       rows.push(["明細範圍", detailNote]);
@@ -4033,6 +4066,8 @@ function ProfitCenter() {
         ["分潤", r0(spS0.comm)],
         ["最終淨利", r0(spS0.afterComm)],
         ["淨利率", (spS0.netMargin * 100).toFixed(2) + "%"],
+        ["平均客單價", r0(spS0.avgAOV)],
+        ["單筆平均淨利", r0(spS0.avgNetPer)],
         []
       );
       rows.push(["明細範圍", detailNote]);
