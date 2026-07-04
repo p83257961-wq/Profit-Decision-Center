@@ -150,9 +150,12 @@ const normDate = (raw) => {
   const s = safeText(raw).split(" ")[0].split("T")[0].replace(/\//g, "-");
   const p = s.split("-");
   if (p.length === 3 && p[0].length === 4) {
-    return `${p[0]}-${p[1].padStart(2, "0")}-${p[2].padStart(2, "0")}`;
+    const d = `${p[0]}-${p[1].padStart(2, "0")}-${p[2].padStart(2, "0")}`;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
   }
-  return s || "1970-01-01";
+  /* 無法辨識的內容一律進 1970 保底桶（會出現在年份選單，異常看得見），
+     不原樣存入以免訂單被所有年月篩選靜默吞掉 */
+  return "1970-01-01";
 };
 const jp = (s, f) => {
   try {
@@ -254,6 +257,27 @@ const periodExpense = (map, y, m, range) => {
     );
   return val((map || {})[commKey(y, m)]);
 };
+/* 數字或 null（NaN 不寫入快照；?? 攔不住 NaN） */
+const numOrNull = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+/* 重新匯入同一張訂單時保留舊快照：參數整組沿用、成本按品項 key 比對。
+   新品項若在舊快照中沒有對應成本，該單會呈現「部分鎖定」提醒使用者重鎖 */
+const withOldSnapshot = (oldOrder, next) => {
+  if (!oldOrder?.snapshotFeeParams) return next;
+  const oldCost = {};
+  (oldOrder.items || []).forEach((i) => {
+    if (Object.prototype.hasOwnProperty.call(i, "snapshotCost"))
+      oldCost[i.key] = i.snapshotCost;
+  });
+  return {
+    ...next,
+    snapshotFeeParams: oldOrder.snapshotFeeParams,
+    items: (next.items || []).map((i) =>
+      Object.prototype.hasOwnProperty.call(oldCost, i.key)
+        ? { ...i, snapshotCost: oldCost[i.key] }
+        : i
+    ),
+  };
+};
 /* 按月費用（分潤）更新：空值＝刪除該月 key */
 const monthlyUpd = (setter, key, value) =>
   setter((prev) => {
@@ -322,7 +346,7 @@ const CSS = `
 .gm{display:grid;grid-template-columns:240px 1fr;gap:20px;align-items:start;}
 .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
 .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
-@media(max-width:900px){.gm{grid-template-columns:1fr;}}
+@media(max-width:900px){.gm{grid-template-columns:1fr;}.side-sticky{position:static!important;}}
 @media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr);}.g3{grid-template-columns:repeat(2,1fr);}}
 @media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}}
 .gcmp{display:grid;grid-template-columns:1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
@@ -330,8 +354,8 @@ const CSS = `
 .gcmp-r{padding:0 0 0 20px;min-width:0;}
 .gcmp-div{background:var(--s3);margin:0 20px;}
 @media(max-width:700px){.gcmp{grid-template-columns:1fr;gap:20px;}.gcmp-div{display:none;}.gcmp-l,.gcmp-r{padding:0;}}
-.hero-num{font-size:clamp(40px,8vw,72px);}
-.hero-num-md{font-size:clamp(36px,7vw,64px);}
+.hero-num{font-size:clamp(40px,8vw,72px);overflow-wrap:anywhere;}
+.hero-num-md{font-size:clamp(36px,7vw,64px);overflow-wrap:anywhere;}
 .hero-pct{font-size:clamp(30px,5.5vw,48px);}
 .hero-pct-md{font-size:clamp(28px,5vw,44px);}
 input,select,button{font-family:'Inter','Noto Sans TC',sans-serif;}
@@ -1733,8 +1757,9 @@ function MonthlyExpensePanel({
   const [local, setLocal] = useState(String(values[key] ?? ""));
   const [focused, setFocused] = useState(false);
   useEffect(() => {
-    setLocal(String(values[key] ?? ""));
-  }, [key, values]);
+    /* 輸入中不被遠端同步覆蓋草稿（與 CostInput/FpInput 同一套防呆） */
+    if (!focused) setLocal(String(values[key] ?? ""));
+  }, [key, values, focused]);
   const handleBlur = () => {
     setFocused(false);
     const n = parseFloat(local);
@@ -1885,8 +1910,8 @@ function MonthlyExpensePanel({
       >
         {isAggregated
           ? selYear === "Custom"
-            ? "自訂區間以整月合計，切換到特定月份可編輯"
-            : "各月合計，切換到特定月份可編輯"
+            ? "自訂區間以整月合計；要編輯請於上方年份選單改選單一月份"
+            : "各月合計；要編輯請於上方選單改選單一月份"
           : hint}
       </p>
     </div>
@@ -2999,9 +3024,33 @@ function ProfitCenter() {
 
     setSlOrders((p) => {
       const merged = { ...p };
+      /* 成員單號索引：同一購物車的任何一張單號都指回同一筆儲存紀錄，
+         避免之後的部分報表（只含 cart 內另一張單）被誤判為新訂單而重複入帳 */
+      const memberIdx = {};
+      Object.entries(merged).forEach(([sk, o]) => {
+        (o.memberIds || [o.orderId]).forEach((id) => {
+          memberIdx[id] = sk;
+        });
+      });
       Object.values(newOrders).forEach((order) => {
         const { _orderIds, ...clean } = order;
-        merged[clean.orderId] = clean;
+        let sk = clean.orderId;
+        for (const id of _orderIds) {
+          if (memberIdx[id]) {
+            sk = memberIdx[id];
+            break;
+          }
+        }
+        const old = merged[sk];
+        clean.orderId = sk;
+        clean.memberIds = [
+          ...new Set([...(old?.memberIds || []), ..._orderIds]),
+        ];
+        clean.memberIds.forEach((id) => {
+          memberIdx[id] = sk;
+        });
+        /* 重匯同單：保留既有快照，避免鎖定的歷史參數被靜默清除 */
+        merged[sk] = withOldSnapshot(old, clean);
       });
       return merged;
     });
@@ -3115,7 +3164,14 @@ function ProfitCenter() {
       });
     }
 
-    setSpOrders((p) => ({ ...p, ...newOrders }));
+    setSpOrders((p) => {
+      const merged = { ...p };
+      Object.values(newOrders).forEach((order) => {
+        /* 重匯同單：保留既有快照，避免鎖定的歷史參數被靜默清除 */
+        merged[order.orderId] = withOldSnapshot(merged[order.orderId], order);
+      });
+      return merged;
+    });
     const dates = Object.values(newOrders)
       .map((o) => String(o.date))
       .filter(Boolean)
@@ -3505,8 +3561,11 @@ function ProfitCenter() {
       map[ym].rev += fin.gross;
       map[ym].net += fin.finalNet;
     });
+    /* 有分潤但當月無有效訂單時也要入帳（建立負值月份），與主視圖 afterComm 口徑一致 */
     Object.entries(commissions).forEach(([k, v]) => {
-      if (map[k] && v !== "" && v !== undefined) map[k].net -= Number(v) || 0;
+      if (v === "" || v === undefined || !/^\d{4}-\d{2}$/.test(k)) return;
+      if (!map[k]) map[k] = { rev: 0, net: 0 };
+      map[k].net -= Number(v) || 0;
     });
     return map;
   }, [spOrders, spFp, spCosts, commissions]);
@@ -3735,42 +3794,53 @@ function ProfitCenter() {
 
   const toggleSnap = () => {
     if (!currentData?.orderList?.length) return;
+    /* 各月營業費 % 不同：限制單一月份操作，避免跨月訂單被寫入同一組（今天的）參數 */
+    if (sY === "All" || sY === "Custom" || sM === "All") {
+      toast(
+        "請先切換到「單一月份」再鎖定/解除快照——各月營業費 % 不同，跨月操作會把同一組參數寫進所有月份",
+        { type: "warning", duration: 8000 }
+      );
+      return;
+    }
     const wasLocked = isLocked;
     const apply = () => {
       const fp = isSL ? slFp : spFp;
       const setter = isSL ? setSlOrders : setSpOrders;
-      const src = isSL ? slOrders : spOrders;
-      const no = { ...src };
-      currentData.orderList.forEach((o) => {
-        const tg = no[o.orderId];
-        if (!tg?.items?.length) return;
-        if (wasLocked) {
-          const nx = { ...tg };
-          nx.items = tg.items.map((i) => {
-            const ni = { ...i };
-            delete ni.snapshotCost;
-            return ni;
-          });
-          delete nx.snapshotFeeParams;
-          no[o.orderId] = nx;
-        } else {
-          no[o.orderId] = {
-            ...tg,
-            snapshotFeeParams: {
-              platformFeeRate: Number(fp.platformFeeRate) ?? null,
-              opExpense: Number(fp.opExpense) ?? null,
-              tax: Number(fp.tax) ?? null,
-              targetNet: Number(fp.targetNet) ?? null,
-            },
-            items: tg.items.map((i) => ({
-              ...i,
-              snapshotCost:
-                costs[i.key] === undefined ? null : Number(costs[i.key]),
-            })),
-          };
-        }
+      /* functional update：以「按下確定當下」的最新訂單集為基底，
+         避免確認框開啟期間遠端同步進來的訂單被過期閉包覆蓋 */
+      setter((src) => {
+        const no = { ...src };
+        currentData.orderList.forEach((o) => {
+          const tg = no[o.orderId];
+          if (!tg?.items?.length) return;
+          if (wasLocked) {
+            const nx = { ...tg };
+            nx.items = tg.items.map((i) => {
+              const ni = { ...i };
+              delete ni.snapshotCost;
+              return ni;
+            });
+            delete nx.snapshotFeeParams;
+            no[o.orderId] = nx;
+          } else {
+            no[o.orderId] = {
+              ...tg,
+              snapshotFeeParams: {
+                platformFeeRate: numOrNull(fp.platformFeeRate),
+                opExpense: numOrNull(fp.opExpense),
+                tax: numOrNull(fp.tax),
+                targetNet: numOrNull(fp.targetNet),
+              },
+              items: tg.items.map((i) => ({
+                ...i,
+                snapshotCost:
+                  costs[i.key] === undefined ? null : Number(costs[i.key]),
+              })),
+            };
+          }
+        });
+        return no;
       });
-      setter(no);
       toast(wasLocked ? "已解除快照" : "已鎖定本期成本快照", {
         type: "success",
       });
@@ -3791,7 +3861,7 @@ function ProfitCenter() {
       title: wasLocked ? "解除快照" : "鎖定快照",
       message: wasLocked
         ? `原快照參數：${snapLine}\n\n解除後，本期訂單將改回以「目前」側欄參數即時計算（${curLine}）。\n\n若是要修正本期的 %：解除後先到側欄改好參數，再重新鎖定。`
-        : `鎖定後，本期訂單將固定採用目前參數：\n${curLine}\n\n之後修改側欄參數不會影響本期。若本期實際營業費 % 還不確定，可先鎖定，之後「解除 → 改 % → 重新鎖定」修正。`,
+        : `鎖定後，本期訂單將固定採用目前參數：\n${curLine}\n\n之後修改側欄參數不會影響本期（「淨利目標」僅為對照線，不隨快照鎖定）。若本期實際營業費 % 還不確定，可先鎖定，之後「解除 → 改 % → 重新鎖定」修正。`,
       danger: wasLocked,
       onOk: apply,
     });
@@ -3814,10 +3884,15 @@ function ProfitCenter() {
     const r = new FileReader();
     r.onload = (ev) => {
       try {
-        setCosts((p) => ({ ...p, ...JSON.parse(ev.target.result) }));
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          throw new Error("not-an-object");
+        setCosts((p) => ({ ...p, ...parsed }));
         toast("成本資料匯入成功", { type: "success" });
       } catch {
-        toast("匯入失敗：JSON 格式錯誤", { type: "error" });
+        toast("匯入失敗：請選擇本工具「備份」產生的 JSON 檔", {
+          type: "error",
+        });
       }
     };
     r.readAsText(f);
@@ -3838,11 +3913,20 @@ function ProfitCenter() {
         ? `${sY}年`
         : `${sY}-${sM}`;
     const esc = (s) => {
-      const v = String(s ?? "");
+      let v = String(s ?? "");
+      /* 公式注入防護：以 =/@/+/- 開頭的非數字內容前綴單引號中和 */
+      if (/^[=@+\-]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v)) v = "'" + v;
       return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
     };
     const r0 = Math.round;
     const rows = [];
+    /* 明細列跟畫面同步套用「虧損篩選／搜尋」；彙總列維持全期間口徑並明確標註 */
+    const filterBits = [];
+    if (lossOnly) filterBits.push("僅虧損單");
+    if (dSearch) filterBits.push(`搜尋「${dSearch}」`);
+    const detailNote = filterBits.length
+      ? `${filterBits.join("、")}，共 ${filteredOrders.length} 筆（上方彙總仍為全期間）`
+      : `全期間共 ${filteredOrders.length} 筆`;
     if (isSL && slD0) {
       rows.push(
         ["平台", "官網"],
@@ -3857,6 +3941,7 @@ function ProfitCenter() {
         ["淨利率", (slD0.trueNetMargin * 100).toFixed(2) + "%"],
         []
       );
+      rows.push(["明細範圍", detailNote]);
       rows.push([
         "日期",
         "單號",
@@ -3869,7 +3954,7 @@ function ProfitCenter() {
         "稅賦",
         "單筆淨利",
       ]);
-      currentData.orderList.forEach((o) =>
+      filteredOrders.forEach((o) =>
         rows.push([
           o.date,
           o.orderId,
@@ -3898,6 +3983,7 @@ function ProfitCenter() {
         ["淨利率", (spS0.netMargin * 100).toFixed(2) + "%"],
         []
       );
+      rows.push(["明細範圍", detailNote]);
       rows.push([
         "日期",
         "單號",
@@ -3910,7 +3996,7 @@ function ProfitCenter() {
         "稅賦",
         "單筆淨利",
       ]);
-      currentData.orderList.forEach((o) =>
+      filteredOrders.forEach((o) =>
         rows.push([
           o.date,
           o.orderId,
@@ -3957,6 +4043,8 @@ function ProfitCenter() {
 
   /* ── 未填成本跳轉 helper ── */
   const jumpToFirstMissCost = () => {
+    /* 先清空商品搜尋，避免缺成本項目被篩掉導致跳轉落空（延遲需大於搜尋 debounce） */
+    setMSearch("");
     setTimeout(() => {
       if (firstMissRef.current) {
         firstMissRef.current.scrollIntoView({
@@ -3969,7 +4057,7 @@ function ProfitCenter() {
           if (firstMissRef.current) firstMissRef.current.style.outline = "none";
         }, 2000);
       }
-    }, 50);
+    }, 320);
   };
 
   const slD = slData?.summary;
@@ -4221,6 +4309,7 @@ function ProfitCenter() {
             style={{ display: isOverview ? "none" : undefined }}
           >
             <div
+              className="side-sticky"
               style={{
                 background: "var(--s1)",
                 border: "1px solid var(--s3)",
@@ -4465,17 +4554,27 @@ function ProfitCenter() {
                         isSL ? "官網" : "蝦皮"
                       }訂單共 ${
                         toDelete.length
-                      } 筆。\n清除後 10 秒內可在右下角通知按「復原」，或重新匯入該期報表。`,
+                      } 筆。\n清除後 10 秒內可在右下角通知按「復原」，或重新匯入該期報表。${
+                        isLocked
+                          ? "\n注意：本期已鎖定快照，清除後快照設定將一併移除。"
+                          : ""
+                      }`,
                       danger: true,
                       onOk: () => {
                         const removed = {};
-                        toDelete.forEach((k) => {
-                          removed[k] = src[k];
-                        });
-                        const updated = { ...src };
-                        toDelete.forEach((k) => delete updated[k]);
                         const setter = isSL ? setSlOrders : setSpOrders;
-                        setter(updated);
+                        /* functional update：以最新訂單集為基底刪除，避免過期閉包 */
+                        setter((cur) => {
+                          const updated = { ...cur };
+                          toDelete.forEach((k) => {
+                            if (updated[k] !== undefined) {
+                              removed[k] = updated[k];
+                              delete updated[k];
+                            }
+                          });
+                          return updated;
+                        });
+                        setExpandedId(null);
                         toast(`已清除 ${toDelete.length} 筆訂單`, {
                           type: "info",
                           action: () => setter((p) => ({ ...p, ...removed })),
@@ -4699,11 +4798,10 @@ function ProfitCenter() {
                               fontFamily: mono,
                               lineHeight: 1,
                               color:
-                                slD.trueNetMargin >= 0.19
+                                slD.gapVal >= 0
                                   ? "var(--up)"
-                                  : slD.trueNetMargin >= 0.16
-                                  ? "var(--accent)"
-                                  : slD.trueNetMargin >= 0.14
+                                  : slD.trueNetMargin >=
+                                    slD.targetNetRate - 0.03
                                   ? "var(--wn)"
                                   : "var(--dn)",
                             }}
@@ -5167,10 +5265,10 @@ function ProfitCenter() {
                               fontFamily: mono,
                               lineHeight: 1,
                               color:
-                                spS.netMargin >= 0.13
+                                spS.netMargin >= spS.targetNet
                                   ? "var(--up)"
-                                  : spS.netMargin >= 0.09
-                                  ? "var(--accent)"
+                                  : spS.netMargin >= spS.targetNet * 0.6
+                                  ? "var(--orange)"
                                   : spS.netMargin > 0
                                   ? "var(--wn)"
                                   : "var(--dn)",
@@ -5389,7 +5487,7 @@ function ProfitCenter() {
                         {
                           l: "真實抽成率",
                           v: fmtP(spS.feeRate),
-                          c: "var(--orange)",
+                          c: "var(--blue)",
                           note: "蝦皮固定抽成費率",
                         },
                         {
@@ -5719,7 +5817,17 @@ function ProfitCenter() {
                                   ref={isFirstMiss ? firstMissRef : undefined}
                                   className={miss && hs ? "rw" : ""}
                                 >
-                                  <td style={{ ...td2, fontWeight: 600 }}>
+                                  <td
+                                    style={{
+                                      ...td2,
+                                      fontWeight: 600,
+                                      maxWidth: 260,
+                                      whiteSpace: "nowrap",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                    title={p.name}
+                                  >
                                     {p.name}
                                   </td>
                                   <td
@@ -5929,7 +6037,7 @@ function ProfitCenter() {
                           onChange={(e) => setLossOnly(e.target.checked)}
                           style={{ accentColor: "var(--dn)" }}
                         />{" "}
-                        虧損篩選
+                        只看虧損（本期）
                       </label>
                     </div>
                   </div>
