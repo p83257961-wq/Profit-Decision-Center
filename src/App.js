@@ -303,7 +303,7 @@ const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap');
 [data-theme="light"]{
   --bg:#FFFFFF;--s1:#FFFFFF;--s2:#F8F8F6;--s3:#EAEAE6;--s4:#D8D8D2;
-  --t1:#1A1A18;--t2:#5C5C54;--t3:#8E8E84;--t4:#B8B8AE;
+  --t1:#1A1A18;--t2:#5C5C54;--t3:#74746A;--t4:#96968C;
   --accent:#1A6B3C;--accent-dim:rgba(26,107,60,0.06);--accent-bdr:rgba(26,107,60,0.18);--accent-text:#1A6B3C;
   --up:#1A6B3C;--up-dim:rgba(26,107,60,0.06);--up-bdr:rgba(26,107,60,0.18);
   --dn:#C0392B;--dn-dim:rgba(192,57,43,0.05);--dn-bdr:rgba(192,57,43,0.18);
@@ -316,7 +316,7 @@ const CSS = `
 }
 [data-theme="dark"]{
   --bg:#080A0E;--s1:#0E1117;--s2:#151921;--s3:#1C212B;--s4:#282D38;
-  --t1:#E8E6E1;--t2:#8B8D93;--t3:#505259;--t4:#35373D;
+  --t1:#E8E6E1;--t2:#9DA0A8;--t3:#7E838E;--t4:#656A73;
   --accent:#2ECC71;--accent-dim:rgba(46,204,113,0.08);--accent-bdr:rgba(46,204,113,0.2);--accent-text:#2ECC71;
   --up:#2ECC71;--up-dim:rgba(46,204,113,0.08);--up-bdr:rgba(46,204,113,0.2);
   --dn:#E74C3C;--dn-dim:rgba(231,76,60,0.08);--dn-bdr:rgba(231,76,60,0.2);
@@ -348,7 +348,7 @@ const CSS = `
 .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
 @media(max-width:900px){.gm{grid-template-columns:1fr;}.side-sticky{position:static!important;}}
 @media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr);}.g3{grid-template-columns:repeat(2,1fr);}}
-@media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}}
+@media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}.app-header{position:static!important;}}
 .gcmp{display:grid;grid-template-columns:1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
 .gcmp-l{padding:0 20px 0 0;min-width:0;}
 .gcmp-r{padding:0 0 0 20px;min-width:0;}
@@ -774,8 +774,50 @@ function OverviewDashboard({
         platform: "蝦皮",
         msg: "有商品成本未填，淨利計算可能偏高",
       });
+    /* 月中 run-rate 預警：檢視「本月」且已過 7 日，用上月同期進度對比，
+       落後 10% 以上提前示警，不必等月底才發現 */
+    if (sY !== "Custom" && sY !== "All" && sM !== "All") {
+      const now = new Date();
+      const curYm = `${now.getFullYear()}-${String(
+        now.getMonth() + 1
+      ).padStart(2, "0")}`;
+      if (`${sY}-${sM}` === curYm && now.getDate() >= 7) {
+        const mNum = Number(sM);
+        const prevYm =
+          mNum === 1
+            ? `${Number(sY) - 1}-12`
+            : `${sY}-${String(mNum - 1).padStart(2, "0")}`;
+        const prevRev = allMonthly?.[prevYm]?.rev || 0;
+        const daysInM = new Date(
+          now.getFullYear(),
+          now.getMonth() + 1,
+          0
+        ).getDate();
+        const frac = now.getDate() / daysInM;
+        const curRev = (slD?.rev || 0) + (spS?.tG || 0);
+        if (prevRev > 0 && frac > 0 && curRev > 0) {
+          const pace = curRev / (prevRev * frac);
+          if (pace < 0.9)
+            list.push({
+              level: "warn",
+              platform: "全站",
+              msg: `本月營收進度僅為上月同期的 ${(pace * 100).toFixed(
+                0
+              )}%（截至 ${now.getDate()} 日），留意月底達成`,
+            });
+          else if (pace >= 1.1)
+            list.push({
+              level: "info",
+              platform: "全站",
+              msg: `本月營收進度為上月同期的 ${(pace * 100).toFixed(
+                0
+              )}%，超前上月步調`,
+            });
+        }
+      }
+    }
     return list;
-  }, [slD, spS, slData, spData, slCosts, spCosts]);
+  }, [slD, spS, slData, spData, slCosts, spCosts, sY, sM, allMonthly]);
 
   /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響；
      淨利線取自 allMonthly（已扣分潤）；自訂區間因非整月，不畫淨利線 */
@@ -3300,6 +3342,9 @@ function ProfitCenter() {
       totalQty: 0,
       returnCount: 0,
       returnRev: 0,
+      addOnRev: 0,
+      addOnQty: 0,
+      addOnOrders: 0,
     };
     const fl = all.filter((o) => {
       if (!inPeriod(o.date)) return false;
@@ -3314,6 +3359,7 @@ function ProfitCenter() {
     const ol = fl
       .map((order) => {
         const fin = slOrderFin(order, slFp, slCosts);
+        let hasAddOn = false;
         order.items.forEach((item) => {
           const cv =
             Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
@@ -3341,7 +3387,13 @@ function ProfitCenter() {
             t.giftCost += ic;
             t.giftQty += item.qty;
           }
+          if (item.isAddOn === true) {
+            t.addOnRev += ir;
+            t.addOnQty += item.qty;
+            hasAddOn = true;
+          }
         });
+        if (hasAddOn) t.addOnOrders++;
         const { pf, sc2, plf, oc, cm, tax, opx, net } = fin;
         t.rev += order.revenue;
         t.pFee += pf;
@@ -4082,6 +4134,7 @@ function ProfitCenter() {
 
       {/* Header */}
       <header
+        className="app-header"
         style={{
           position: "sticky",
           top: 0,
@@ -4234,7 +4287,16 @@ function ProfitCenter() {
             <select
               value={sY}
               onChange={(e) => {
-                setSY(e.target.value);
+                const v = e.target.value;
+                /* 會計年度（公司 4 月起算）：換算成自訂區間 4/1～翌年 3/31 */
+                if (v.startsWith("FY")) {
+                  const y = Number(v.slice(2));
+                  setRange({ from: `${y}-04-01`, to: `${y + 1}-03-31` });
+                  setSY("Custom");
+                  setSM("All");
+                  return;
+                }
+                setSY(v);
                 setSM("All");
               }}
               aria-label="選擇年份"
@@ -4246,6 +4308,13 @@ function ProfitCenter() {
                   {y} 年
                 </option>
               ))}
+              {[...new Set(aY.flatMap((y) => [Number(y) - 1, Number(y)]))]
+                .sort((a, b) => b - a)
+                .map((y) => (
+                  <option key={`FY${y}`} value={`FY${y}`}>
+                    FY{y}（{y}/4～{y + 1}/3）
+                  </option>
+                ))}
               <option value="Custom">自訂區間</option>
             </select>
             {sY === "Custom" ? (
@@ -4592,7 +4661,16 @@ function ProfitCenter() {
           </aside>
 
           {/* Main */}
-          <main style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <main
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+              /* grid 子元素預設 min-width:auto，寬表格會撐開整頁：
+                 歸零後讓內層 overflow 容器接手橫向捲動 */
+              minWidth: 0,
+            }}
+          >
             {isOverview ? (
               <OverviewDashboard
                 slData={slData}
@@ -5123,6 +5201,74 @@ function ProfitCenter() {
                         </div>
                       ))}
                     </div>
+                    {/* KPI 第三排：客單價與每月加價購檔期成效 */}
+                    <div className="g3 f3">
+                      {[
+                        {
+                          l: "平均客單價 AOV",
+                          v: fmt$(slD.rev / (slD.valid || 1)),
+                          c: "var(--t1)",
+                          h: "營收 ÷ 有效訂單（含運費收入）",
+                        },
+                        {
+                          l: "加購品營收",
+                          v: fmt$(slD.addOnRev),
+                          c: slD.addOnRev > 0 ? "var(--purple)" : "var(--t3)",
+                          h: `${slD.addOnQty} 件・佔營收 ${fmtP(
+                            slD.rev > 0 ? slD.addOnRev / slD.rev : 0
+                          )}`,
+                        },
+                        {
+                          l: "加購滲透率",
+                          v: fmtP(
+                            slD.valid > 0 ? slD.addOnOrders / slD.valid : 0
+                          ),
+                          c: "var(--blue)",
+                          h: `有加購的訂單 ${slD.addOnOrders}/${slD.valid} 筆・每月加價購檔期成效`,
+                        },
+                      ].map((k, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            background: "var(--s1)",
+                            border: "1px solid var(--s3)",
+                            borderRadius: 14,
+                            padding: "20px 22px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: "var(--t3)",
+                              marginBottom: 8,
+                            }}
+                          >
+                            {k.l}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 26,
+                              fontWeight: 700,
+                              fontFamily: mono,
+                              letterSpacing: "-0.03em",
+                              color: k.c,
+                            }}
+                          >
+                            {k.v}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "var(--t4)",
+                              marginTop: 8,
+                            }}
+                          >
+                            {k.h}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </>
                 )}
 
@@ -5580,6 +5726,70 @@ function ProfitCenter() {
                               }}
                             />
                             {k.note}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* KPI 第三排：券策略錨點與單筆貢獻 */}
+                    <div className="g3 f3">
+                      {[
+                        {
+                          l: "平均客單價 AOV",
+                          v: fmt$(spS.avgAOV),
+                          c: "var(--t1)",
+                          h: "優惠券門檻設計的錨點指標（含補貼還原）",
+                        },
+                        {
+                          l: "單筆平均淨利",
+                          v: fmt$(spS.avgNetPer),
+                          c: spS.avgNetPer >= 0 ? "var(--up)" : "var(--dn)",
+                          h: "已扣分潤後平均每單實際貢獻",
+                        },
+                        {
+                          l: "退貨/退款排除",
+                          v: `${spS.refundN} 筆`,
+                          c: spS.refundN > 0 ? "var(--wn)" : "var(--t3)",
+                          h: `${fmt$(spS.refundG)} 未計入營收`,
+                        },
+                      ].map((k, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            background: "var(--s1)",
+                            border: "1px solid var(--s3)",
+                            borderRadius: 14,
+                            padding: "20px 22px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: "var(--t3)",
+                              marginBottom: 8,
+                            }}
+                          >
+                            {k.l}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 26,
+                              fontWeight: 700,
+                              fontFamily: mono,
+                              letterSpacing: "-0.03em",
+                              color: k.c,
+                            }}
+                          >
+                            {k.v}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "var(--t4)",
+                              marginTop: 8,
+                            }}
+                          >
+                            {k.h}
                           </div>
                         </div>
                       ))}
