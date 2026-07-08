@@ -117,7 +117,7 @@ const DEFAULT_FP_SL = {
   tax: "6.2",
   targetNet: "17.0",
 };
-const DEFAULT_FP_SP = { opExpense: "30.0", tax: "6.2", targetNet: "14.0" };
+const DEFAULT_FP_SP = { opExpense: "30.0", tax: "6.2", targetNet: "13.0" };
 
 const SK = {
   platform: "upc_platform_v1",
@@ -944,10 +944,11 @@ function OverviewDashboard({
     );
   }
 
+  /* 全公司年均目標 17%（OPEX 總帳進 32% 時達成）；15% 是全公司底線 */
   const overallStatus =
-    totalNetMargin >= 0.15
+    totalNetMargin >= 0.16
       ? { label: "整體健康", c: "var(--up)" }
-      : totalNetMargin >= 0.11
+      : totalNetMargin >= 0.15
       ? { label: "需要關注", c: "var(--wn)" }
       : totalNetMargin > 0
       ? { label: "低於警戒", c: "var(--dn)" }
@@ -1068,9 +1069,9 @@ function OverviewDashboard({
                   fontFamily: mono,
                   lineHeight: 1,
                   color:
-                    totalNetMargin >= 0.15
+                    totalNetMargin >= 0.16
                       ? "var(--up)"
-                      : totalNetMargin >= 0.11
+                      : totalNetMargin >= 0.15
                       ? "var(--wn)"
                       : "var(--dn)",
                 }}
@@ -1186,7 +1187,7 @@ function OverviewDashboard({
                 rev: slD?.rev || 0,
                 net: slD?.net || 0,
                 margin: slD?.trueNetMargin || 0,
-                target: slD?.targetNetRate || 0.15,
+                target: slD?.targetNetRate || 0.17,
                 orders: slD?.valid || 0,
                 opexRate:
                   slD && slD.rev > 0 ? slD.opExpTotal / slD.rev : 0,
@@ -1199,7 +1200,7 @@ function OverviewDashboard({
                 rev: spS?.tG || 0,
                 net: spS?.afterComm || 0,
                 margin: spS?.netMargin || 0,
-                target: spS?.targetNet || 0.14,
+                target: spS?.targetNet || 0.13,
                 orders: spS?.validN || 0,
                 opexRate: spS && spS.tG > 0 ? spS.tOp / spS.tG : 0,
                 aov: spS?.avgAOV || 0,
@@ -3535,7 +3536,7 @@ function ProfitCenter() {
             ),
           ].sort()
         : [];
-    const targetNet = (parseFloat(spFp.targetNet) || 14) / 100;
+    const targetNet = (parseFloat(spFp.targetNet) || 13) / 100;
     const prods = {};
     let tG = 0,
       tV = 0,
@@ -5053,10 +5054,8 @@ function ProfitCenter() {
                           h:
                             slD.grossMargin >= 0.62
                               ? "✓ 超越目標 62%，表現優異"
-                              : slD.grossMargin >= 0.6
-                              ? "✓ 達標，目標 60%"
                               : slD.grossMargin >= 0.58
-                              ? "⚠ 正常帶下緣，目標 60%"
+                              ? "✓ 達標，目標帶 58~60%"
                               : "⚠ 低於警戒線 58%，檢視成本與定價",
                         },
                         {
@@ -5064,15 +5063,17 @@ function ProfitCenter() {
                           v: fmtP(
                             slD.rev > 0 ? slD.contributionMargin / slD.rev : 0
                           ),
+                          /* 實收口徑（2026-07-08 基準）：
+                             54 優異／52~54 目標帶／50 調整／介入線 */
                           c: (() => {
                             const r =
                               slD.rev > 0
                                 ? slD.contributionMargin / slD.rev
                                 : 0;
-                            return r >= 0.565
+                            return r >= 0.52
                               ? "var(--up)"
-                              : r >= 0.53
-                              ? "var(--accent)"
+                              : r >= 0.5
+                              ? "var(--wn)"
                               : "var(--dn)";
                           })(),
                           h: (() => {
@@ -5080,13 +5081,13 @@ function ProfitCenter() {
                               slD.rev > 0
                                 ? slD.contributionMargin / slD.rev
                                 : 0;
-                            return r >= 0.565
-                              ? "✓ 超越目標 56.5%，成本控管優秀"
-                              : r >= 0.55
-                              ? "✓ 達標，目標 55%"
-                              : r >= 0.53
-                              ? "⚠ 正常帶下緣，目標 55%"
-                              : "⚠ 低於警戒線 53%，檢視通路費與折扣";
+                            return r >= 0.54
+                              ? "✓ 表現優異（理論天花板 ≈54.5%）"
+                              : r >= 0.52
+                              ? "✓ 達標，目標帶 52~54%"
+                              : r >= 0.5
+                              ? "⚠ 低於 52%：先調商品結構與曝光，收斂折讓贈品"
+                              : "⚠ 低於介入線 50%：檢視折讓、贈品、通路費";
                           })(),
                         },
                       ].map((k, i) => (
@@ -5652,9 +5653,9 @@ function ProfitCenter() {
                             return r >= 0.68
                               ? "✓ 超越目標 68%，表現優異"
                               : r >= 0.65
-                              ? "✓ 達標，目標 65~67%"
+                              ? "✓ 達標，目標 65~68%"
                               : r >= 0.63
-                              ? "⚠ 正常帶下緣，目標 65~67%"
+                              ? "⚠ 正常帶下緣，目標 65~68%"
                               : "⚠ 低於警戒線 63%，檢視定價";
                           })(),
                         },
@@ -5685,22 +5686,26 @@ function ProfitCenter() {
                               : "注意：接近警戒線 2.5%",
                         },
                         {
+                          /* 階梯制（2026-07-08 雙平台淨利管理基準）：
+                             50 優異／49.2 達標線／48 觀察／47 調整線／介入線 */
                           l: "通路後毛利率",
                           v: fmtP(spS.grossMargin),
                           c:
-                            spS.grossMargin >= 0.49
+                            spS.grossMargin >= 0.492
                               ? "var(--up)"
-                              : spS.grossMargin >= 0.44
-                              ? "var(--accent)"
+                              : spS.grossMargin >= 0.48
+                              ? "var(--wn)"
                               : "var(--dn)",
                           note:
-                            spS.grossMargin >= 0.49
-                              ? "✓ 超越目標 49%，費用控管優秀"
-                              : spS.grossMargin >= 0.46
-                              ? "✓ 達標，目標 46~48%"
-                              : spS.grossMargin >= 0.44
-                              ? "⚠ 正常帶下緣，目標 46~48%"
-                              : "⚠ 低於警戒線 44%，檢視平台費用",
+                            spS.grossMargin >= 0.5
+                              ? "✓ 超越 50%，表現優異（換算稅後 ≈13.8%）"
+                              : spS.grossMargin >= 0.492
+                              ? "✓ 達標，達標線 49.2%"
+                              : spS.grossMargin >= 0.48
+                              ? "⚠ 觀察帶，追蹤商品組合與讓利深度"
+                              : spS.grossMargin >= 0.47
+                              ? "⚠ 低於調整線 48%：調商品結構，原則不漲價"
+                              : "⚠ 低於介入線 47%：立即檢視平台費用與優惠券",
                         },
                       ].map((k, i) => (
                         <div
