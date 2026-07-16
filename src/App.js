@@ -454,7 +454,7 @@ const SyncDot = ({ status, last }) => {
       )}
       <span>{v.l}</span>
       <span style={{ color: "var(--s4)" }}>·</span>
-      <span style={{ opacity: 0.6, fontSize: 10 }}>{t}</span>
+      <span style={{ color: "var(--t2)", fontSize: 10 }}>{t}</span>
     </div>
   );
 };
@@ -787,17 +787,21 @@ function OverviewDashboard({
       ).padStart(2, "0")}`;
       if (`${sY}-${sM}` === curYm) {
         /* 進度基準用「已匯入資料的最後一天」而非今天：
-           報表是手動匯入的，晚幾天看不該被誤判為落後 */
-        let lastDay = 0;
-        [slOrders, spOrders].forEach((src) =>
+           報表是手動匯入的，晚幾天看不該被誤判為落後。
+           兩平台各自取匯入進度、再取較小值——單一通路報表落後時
+           寧可不出警訊，也不用不完整的合計去誤判 */
+        const lastOf = (src) => {
+          let d0 = 0;
           Object.values(src || {}).forEach((o) => {
             const d = String(o.date || "");
             if (d.startsWith(curYm)) {
               const dd = Number(d.substring(8, 10)) || 0;
-              if (dd > lastDay) lastDay = dd;
+              if (dd > d0) d0 = dd;
             }
-          })
-        );
+          });
+          return d0;
+        };
+        const lastDay = Math.min(lastOf(slOrders), lastOf(spOrders));
         const effDay = Math.min(now.getDate(), lastDay);
         const mNum = Number(sM);
         const prevYm =
@@ -805,12 +809,9 @@ function OverviewDashboard({
             ? `${Number(sY) - 1}-12`
             : `${sY}-${String(mNum - 1).padStart(2, "0")}`;
         const prevRev = allMonthly?.[prevYm]?.rev || 0;
-        const daysInM = new Date(
-          now.getFullYear(),
-          now.getMonth() + 1,
-          0
-        ).getDate();
-        const frac = effDay / daysInM;
+        /* 分母用「上月」天數（prevRev 是上月的量），並封頂 1 */
+        const prevDays = new Date(Number(sY), mNum - 1, 0).getDate();
+        const frac = Math.min(1, effDay / prevDays);
         const curRev = (slD?.rev || 0) + (spS?.tG || 0);
         if (effDay >= 7 && prevRev > 0 && frac > 0 && curRev > 0) {
           const pace = curRev / (prevRev * frac);
@@ -956,6 +957,33 @@ function OverviewDashboard({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {totalRev === 0 && (
+        <div
+          className="f0"
+          style={{
+            background: "var(--wn-dim)",
+            border: "1px solid var(--wn-bdr)",
+            borderRadius: 14,
+            padding: "14px 20px",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <AlertTriangle size={16} color="var(--wn)" />
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--t1)",
+              fontWeight: 600,
+              lineHeight: 1.6,
+            }}
+          >
+            此期間兩平台都沒有有效訂單，下方數字全為
+            0——請先確認期間選擇是否正確、該期間報表是否已匯入。
+          </div>
+        </div>
+      )}
       {/* ── 老闆月報 Hero ── */}
       <div
         className="f1"
@@ -1096,12 +1124,41 @@ function OverviewDashboard({
                   fontWeight: 700,
                   fontFamily: mono,
                   lineHeight: 1,
-                  color: "var(--t2)",
+                  /* OPEX 框架：目標 30%、總帳上限 32%（⇔全公司稅後 17%）；愈低愈好 */
+                  color:
+                    totalRev === 0
+                      ? "var(--t2)"
+                      : totalOpexRate <= 0.3
+                      ? "var(--up)"
+                      : totalOpexRate <= 0.32
+                      ? "var(--wn)"
+                      : "var(--dn)",
                 }}
               >
                 {fmtP(totalOpexRate)}
               </div>
-              <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 6 }}>
+              {totalRev > 0 && (
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    marginTop: 6,
+                    color:
+                      totalOpexRate <= 0.3
+                        ? "var(--up)"
+                        : totalOpexRate <= 0.32
+                        ? "var(--wn)"
+                        : "var(--dn)",
+                  }}
+                >
+                  {totalOpexRate <= 0.3
+                    ? "✓ 在 OPEX 目標 30% 內"
+                    : totalOpexRate <= 0.32
+                    ? "⚠ 超過目標 30%，仍在總帳上限 32% 內"
+                    : "⚠ 超過總帳上限 32%，全公司稅後 17% 難達成"}
+                </div>
+              )}
+              <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 2 }}>
                 依各月快照％營收加權（含廣告）
               </div>
             </div>
@@ -1284,7 +1341,14 @@ function OverviewDashboard({
                       {
                         l: "營業費率（快照加權）",
                         v: fmtP(p.opexRate),
-                        c: "var(--t2)",
+                        c:
+                          p.rev === 0
+                            ? "var(--t2)"
+                            : p.opexRate <= 0.3
+                            ? p.color
+                            : p.opexRate <= 0.32
+                            ? "var(--wn)"
+                            : "var(--dn)",
                       },
                       { l: "客單價 AOV", v: fmt$(p.aov) },
                     ].map((k, j) => (
@@ -3131,6 +3195,30 @@ function ProfitCenter() {
       });
     }
 
+    /* 預掃部分重匯數量（供匯入提示用；實際判斷在 functional updater 內以最新狀態為準） */
+    let partialKept = 0;
+    {
+      const idxPre = {};
+      Object.entries(slOrders).forEach(([sk, o]) =>
+        (o.memberIds || [o.orderId]).forEach((id) => {
+          idxPre[id] = sk;
+        })
+      );
+      Object.values(newOrders).forEach((order) => {
+        let sk = null;
+        for (const id of order._orderIds)
+          if (idxPre[id]) {
+            sk = idxPre[id];
+            break;
+          }
+        const old = sk ? slOrders[sk] : null;
+        if (
+          old?.memberIds &&
+          old.memberIds.some((id) => !order._orderIds.includes(id))
+        )
+          partialKept++;
+      });
+    }
     setSlOrders((p) => {
       const merged = { ...p };
       /* 成員單號索引：同一購物車的任何一張單號都指回同一筆儲存紀錄，
@@ -3151,6 +3239,22 @@ function ProfitCenter() {
           }
         }
         const old = merged[sk];
+        /* 部分重匯防護：本次檔案缺了該購物車既有成員單號時，
+           整筆覆蓋會讓缺席成員的營收靜默消失——保留舊合併紀錄不動 */
+        if (
+          old?.memberIds &&
+          old.memberIds.some((id) => !_orderIds.includes(id))
+        ) {
+          return;
+        }
+        /* 吸收同購物車先前被分開儲存的舊紀錄（歷史資料時期產生），
+           避免同一張單同時存在於合併紀錄與獨立紀錄而重複入帳 */
+        _orderIds.forEach((id) => {
+          const otherKey = memberIdx[id];
+          if (otherKey && otherKey !== sk && merged[otherKey]) {
+            delete merged[otherKey];
+          }
+        });
         clean.orderId = sk;
         clean.memberIds = [
           ...new Set([...(old?.memberIds || []), ..._orderIds]),
@@ -3172,7 +3276,13 @@ function ProfitCenter() {
       setSY(dates[0].substring(0, 4));
       setSM(dates[0].substring(5, 7));
     }
-    toast(`已匯入 ${count} 筆官網訂單`, { type: "success" });
+    toast(
+      `已匯入 ${count} 筆官網訂單` +
+        (partialKept > 0
+          ? `（${partialKept} 筆購物車部分重匯，已保留原合併紀錄——如需更正請重匯含完整購物車的報表）`
+          : ""),
+      { type: "success", duration: partialKept > 0 ? 9000 : 3500 }
+    );
   };
 
   /* ─── Shopee CSV/XLSX Parser ────────────────────────────────── */
@@ -3893,8 +4003,19 @@ function ProfitCenter() {
         ? null
         : Number(v);
     const sets = new Map();
+    /* 鎖定時成本未填（snapshotCost:null）的品項不受快照保護，
+       會跟著之後的成本表變動——統計出來明白告知 */
+    const nullCostKeys = new Set();
     currentData.orderList.forEach((o) => {
-      const sp = src[o.orderId]?.snapshotFeeParams;
+      const rec = src[o.orderId];
+      (rec?.items || []).forEach((i) => {
+        if (
+          Object.prototype.hasOwnProperty.call(i, "snapshotCost") &&
+          i.snapshotCost === null
+        )
+          nullCostKeys.add(i.key);
+      });
+      const sp = rec?.snapshotFeeParams;
       if (!sp) return;
       const p = {
         opExpense: norm(sp.opExpense),
@@ -3907,7 +4028,7 @@ function ProfitCenter() {
     });
     if (!sets.size) return null;
     const list = [...sets.values()].sort((a, b) => b.count - a.count);
-    return { list, mixed: sets.size > 1 };
+    return { list, mixed: sets.size > 1, nullCostCount: nullCostKeys.size };
   }, [currentData, isSL, slOrders, spOrders]);
   const pct = (v) => (v === null ? "—" : `${v}%`);
 
@@ -3980,7 +4101,11 @@ function ProfitCenter() {
       title: wasLocked ? "解除快照" : "鎖定快照",
       message: wasLocked
         ? `原快照參數：${snapLine}\n\n解除後，本期訂單將改回以「目前」側欄參數即時計算（${curLine}）。\n\n若是要修正本期的 %：解除後先到側欄改好參數，再重新鎖定。`
-        : `鎖定後，本期訂單將固定採用目前參數：\n${curLine}\n\n之後修改側欄參數不會影響本期（「淨利目標」僅為對照線，不隨快照鎖定）。若本期實際營業費 % 還不確定，可先鎖定，之後「解除 → 改 % → 重新鎖定」修正。`,
+        : `鎖定後，本期訂單將固定採用目前參數：\n${curLine}\n\n之後修改側欄參數不會影響本期（「淨利目標」僅為對照線，不隨快照鎖定）。若本期實際營業費 % 還不確定，可先鎖定，之後「解除 → 改 % → 重新鎖定」修正。${
+          missCost.n > 0
+            ? `\n\n⚠ 目前有 ${missCost.n} 項商品成本未填：未填項不受快照保護，之後改成本表仍會影響本期數字，建議先補成本再鎖定。`
+            : ""
+        }`,
       danger: wasLocked,
       onOk: apply,
     });
@@ -4572,6 +4697,21 @@ function ProfitCenter() {
                         {snapParams.mixed ? `（${sp.count} 筆）` : ""}
                       </div>
                     ))}
+                    {snapParams.nullCostCount > 0 && (
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: "var(--dn)",
+                          fontWeight: 700,
+                          marginTop: 4,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        ⚠ {snapParams.nullCostCount}{" "}
+                        個品項鎖定時成本未填、不受快照保護，仍會跟著成本表變動——補填成本後「解除
+                        → 重新鎖定」
+                      </div>
+                    )}
                     <div
                       style={{
                         fontSize: 9,
@@ -4766,6 +4906,37 @@ function ProfitCenter() {
               </div>
             ) : (
               <>
+                {/* 本期零筆提示：區分「沒匯資料/期間選錯」與「業績歸零」，
+                    避免全 0 的 KPI 被誤讀成真實警訊 */}
+                {((isSL && slD && slD.valid === 0) ||
+                  (!isSL && spS && spS.validN === 0)) && (
+                  <div
+                    className="f0"
+                    style={{
+                      background: "var(--wn-dim)",
+                      border: "1px solid var(--wn-bdr)",
+                      borderRadius: 14,
+                      padding: "14px 20px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                    }}
+                  >
+                    <AlertTriangle size={16} color="var(--wn)" />
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--t1)",
+                        fontWeight: 600,
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      此期間沒有任何有效訂單，下方數字全為
+                      0——請先確認：期間選擇是否正確（含自訂區間起訖日）、該期間的
+                      {isSL ? "官網" : "蝦皮"}報表是否已匯入。
+                    </div>
+                  </div>
+                )}
                 {/* ══ SHOPLINE HERO + KPI ══ */}
                 {isSL && slD && (
                   <>
@@ -5151,6 +5322,8 @@ function ProfitCenter() {
                               ? "var(--dn)"
                               : slD.voucherRate > 0.055
                               ? "var(--wn)"
+                              : slD.voucherRate < 0.04
+                              ? "var(--t3)"
                               : slD.voucherRate <= 0.045
                               ? "var(--up)"
                               : "var(--purple)",
@@ -5159,6 +5332,8 @@ function ProfitCenter() {
                               ? "⚠ 品牌警戒！單月 >6.5%，立即介入"
                               : slD.voucherRate > 0.055
                               ? "⚠ 超出警戒線 5.5%，啟動檢討"
+                              : slD.voucherRate < 0.04
+                              ? "低於目標下限 4%，折讓/贈品力度偏低"
                               : slD.voucherRate <= 0.045
                               ? "✓ 在目標範圍 4~4.5% 內"
                               : "注意：接近警戒線 5.5%",
@@ -5673,6 +5848,8 @@ function ProfitCenter() {
                               ? "var(--dn)"
                               : spS.voucherRate > 0.025
                               ? "var(--wn)"
+                              : spS.voucherRate < 0.008
+                              ? "var(--t3)"
                               : spS.voucherRate <= 0.015
                               ? "var(--up)"
                               : "var(--purple)",
@@ -5681,6 +5858,8 @@ function ProfitCenter() {
                               ? "⚠ 品牌警戒！單月 >3%，立即介入"
                               : spS.voucherRate > 0.025
                               ? "⚠ 超出警戒線 2.5%，啟動檢討"
+                              : spS.voucherRate < 0.008
+                              ? "低於下限 0.8%，本期幾乎未配券（確認檔期是否漏配）"
                               : spS.voucherRate <= 0.015
                               ? "✓ 在目標範圍 0.8~1.5% 內"
                               : "注意：接近警戒線 2.5%",
@@ -6790,10 +6969,16 @@ function ProfitCenter() {
             <div
               style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}
             >
-              <Btn onClick={() => setConfirmBox(null)}>取消</Btn>
+              {/* 破壞性操作預設焦點給「取消」，避免殘留 Enter 誤觸清資料 */}
+              <Btn
+                autoFocus={!!confirmBox.danger}
+                onClick={() => setConfirmBox(null)}
+              >
+                取消
+              </Btn>
               <Btn
                 v={confirmBox.danger ? "danger" : "primary"}
-                autoFocus
+                autoFocus={!confirmBox.danger}
                 onClick={() => {
                   const fn = confirmBox.onOk;
                   setConfirmBox(null);
