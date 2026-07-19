@@ -128,6 +128,9 @@ const SK = {
   slOrders: "upc_sl_orders_v1",
   spOrders: "upc_sp_orders_v1",
   commissions: "upc_commissions_v1",
+  components: "upc_components_v1",
+  slRecipes: "upc_sl_recipes_v1",
+  spRecipes: "upc_sp_recipes_v1",
   theme: "upc_theme_v1",
 };
 
@@ -278,6 +281,27 @@ const withOldSnapshot = (oldOrder, next) => {
     ),
   };
 };
+/* ─── 成本組件（配方制）───────────────────────────────────────
+   原料庫 components: { compId: { name, price } }（兩平台共用單價）
+   配方 recipes: { costKey: [{ compId, qty }] }（各平台各自掛）
+   商品有效成本 = 配方存在 ? Σ(組件單價×用量) : 手填成本。
+   改組件單價 → 所有掛配方的商品自動重算；已鎖定月份因快照凍結不受影響 */
+const recipeCost = (lines, components) =>
+  (lines || []).reduce(
+    (s, l) =>
+      s + (Number(components?.[l.compId]?.price) || 0) * (Number(l.qty) || 0),
+    0
+  );
+const resolveCosts = (costs, recipes, components) => {
+  const eff = { ...costs };
+  Object.entries(recipes || {}).forEach(([k, lines]) => {
+    if (Array.isArray(lines) && lines.length)
+      eff[k] = recipeCost(lines, components);
+  });
+  return eff;
+};
+const newCompId = () =>
+  `cmp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 /* 按月費用（分潤）更新：空值＝刪除該月 key */
 const monthlyUpd = (setter, key, value) =>
   setter((prev) => {
@@ -2509,6 +2533,9 @@ function ProfitCenter() {
   const [slOrders, setSlOrders] = useState(() => gl(SK.slOrders, {}));
   const [spOrders, setSpOrders] = useState(() => gl(SK.spOrders, {}));
   const [commissions, setCommissions] = useState(() => gl(SK.commissions, {}));
+  const [components, setComponents] = useState(() => gl(SK.components, {}));
+  const [slRecipes, setSlRecipes] = useState(() => gl(SK.slRecipes, {}));
+  const [spRecipes, setSpRecipes] = useState(() => gl(SK.spRecipes, {}));
 
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
@@ -2530,6 +2557,8 @@ function ProfitCenter() {
   const [pageSize, setPageSize] = useState(30);
   const [dragOver, setDragOver] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [recipeEditKey, setRecipeEditKey] = useState(null);
+  const [newComp, setNewComp] = useState({ name: "", price: "" });
 
   const fRef = useRef({});
   const cRef = useRef(null);
@@ -2615,6 +2644,15 @@ function ProfitCenter() {
   useEffect(() => {
     persist(SK.commissions, commissions);
   }, [commissions, persist]);
+  useEffect(() => {
+    persist(SK.components, components);
+  }, [components, persist]);
+  useEffect(() => {
+    persist(SK.slRecipes, slRecipes);
+  }, [slRecipes, persist]);
+  useEffect(() => {
+    persist(SK.spRecipes, spRecipes);
+  }, [spRecipes, persist]);
 
   /* Firebase init */
   useEffect(() => {
@@ -2845,6 +2883,9 @@ function ProfitCenter() {
             if (metaData.slCosts) setSlCosts(metaData.slCosts);
             if (metaData.spCosts) setSpCosts(metaData.spCosts);
             if (metaData.commissions) setCommissions(metaData.commissions);
+            if (metaData.components) setComponents(metaData.components);
+            if (metaData.slRecipes) setSlRecipes(metaData.slRecipes);
+            if (metaData.spRecipes) setSpRecipes(metaData.spRecipes);
             lRMeta.current = rMs;
             lL.current = rMs;
             setLastSyncAt(Date.now());
@@ -2972,6 +3013,9 @@ function ProfitCenter() {
           slCosts,
           spCosts,
           commissions,
+          components,
+          slRecipes,
+          spRecipes,
           updatedAtMs: ms,
           updatedBy: meta.current.clientId,
         });
@@ -3052,6 +3096,9 @@ function ProfitCenter() {
     slOrders,
     spOrders,
     commissions,
+    components,
+    slRecipes,
+    spRecipes,
     aReady,
     cReady,
   ]);
@@ -3471,6 +3518,16 @@ function ProfitCenter() {
     [sY, sM, range]
   );
 
+  /* ─── 有效成本表：配方（組件×用量）優先，無配方回退手填 ── */
+  const slEffCosts = useMemo(
+    () => resolveCosts(slCosts, slRecipes, components),
+    [slCosts, slRecipes, components]
+  );
+  const spEffCosts = useMemo(
+    () => resolveCosts(spCosts, spRecipes, components),
+    [spCosts, spRecipes, components]
+  );
+
   /* ─── Shopline Data Processing ────────────────────────────── */
   const slData = useMemo(() => {
     const all = Object.values(slOrders);
@@ -3535,14 +3592,14 @@ function ProfitCenter() {
     });
     const ol = fl
       .map((order) => {
-        const fin = slOrderFin(order, slFp, slCosts);
+        const fin = slOrderFin(order, slFp, slEffCosts);
         let hasAddOn = false;
         order.items.forEach((item) => {
           const cv =
             Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
             item.snapshotCost !== null
               ? Number(item.snapshotCost) || 0
-              : Number(slCosts[item.key]) || 0;
+              : Number(slEffCosts[item.key]) || 0;
           t.totalQty += item.qty;
           if (!mm[item.key])
             mm[item.key] = {
@@ -3622,7 +3679,7 @@ function ProfitCenter() {
         returnRate: t.valid > 0 ? t.returnCount / t.valid : 0,
       },
     };
-  }, [slOrders, sY, slFp, slCosts, inPeriod]);
+  }, [slOrders, sY, slFp, slCosts, slEffCosts, inPeriod]);
 
   /* ─── Shopee Data Processing ──────────────────────────────── */
   const spData = useMemo(() => {
@@ -3661,7 +3718,7 @@ function ProfitCenter() {
     const filtered = all.filter((o) => inPeriod(o.date));
     const orderList = filtered
       .map((order) => {
-        const fin = spOrderFin(order, spFp, spCosts);
+        const fin = spOrderFin(order, spFp, spEffCosts);
         if (fin.isCanc) return null;
         if (fin.isRef) {
           refundN++;
@@ -3673,7 +3730,7 @@ function ProfitCenter() {
             Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
             item.snapshotCost !== null
               ? Number(item.snapshotCost) || 0
-              : Number(spCosts[item.key]) || 0;
+              : Number(spEffCosts[item.key]) || 0;
           if (!prods[item.key])
             prods[item.key] = {
               key: item.key,
@@ -3762,7 +3819,7 @@ function ProfitCenter() {
         voucherRate: tG > 0 ? tV / tG : 0,
       },
     };
-  }, [spOrders, sY, sM, spFp, spCosts, commissions, range, inPeriod]);
+  }, [spOrders, sY, sM, spFp, spEffCosts, commissions, range, inPeriod]);
 
   /* ─── 每月營收/淨利彙總（環比/同比用；已扣分潤） ────────── */
   const slMonthly = useMemo(() => {
@@ -3774,17 +3831,17 @@ function ProfitCenter() {
       if (ym.length < 7) return;
       if (!map[ym]) map[ym] = { rev: 0, net: 0 };
       map[ym].rev += o.revenue || 0;
-      map[ym].net += slOrderFin(o, slFp, slCosts).net;
+      map[ym].net += slOrderFin(o, slFp, slEffCosts).net;
     });
     return map;
-  }, [slOrders, slFp, slCosts]);
+  }, [slOrders, slFp, slEffCosts]);
 
   const spMonthly = useMemo(() => {
     const map = {};
     Object.values(spOrders).forEach((o) => {
       const ym = String(o.date || "").substring(0, 7);
       if (ym.length < 7) return;
-      const fin = spOrderFin(o, spFp, spCosts);
+      const fin = spOrderFin(o, spFp, spEffCosts);
       if (fin.isCanc || fin.isRef) return;
       if (!map[ym]) map[ym] = { rev: 0, net: 0 };
       map[ym].rev += fin.gross;
@@ -3797,7 +3854,7 @@ function ProfitCenter() {
       map[k].net -= Number(v) || 0;
     });
     return map;
-  }, [spOrders, spFp, spCosts, commissions]);
+  }, [spOrders, spFp, spEffCosts, commissions]);
 
   const allMonthly = useMemo(() => {
     const map = {};
@@ -3816,6 +3873,9 @@ function ProfitCenter() {
   const isSL = platform === "shopline";
   const costs = isSL ? slCosts : spCosts;
   const setCosts = isSL ? setSlCosts : setSpCosts;
+  const costsEff = isSL ? slEffCosts : spEffCosts;
+  const recipes = isSL ? slRecipes : spRecipes;
+  const setRecipes = isSL ? setSlRecipes : setSpRecipes;
   const currentData = isSL ? slData : isOverview ? null : spData;
   const aY = isOverview
     ? [...new Set([...(slData?.years || []), ...(spData?.years || [])])]
@@ -3842,6 +3902,7 @@ function ProfitCenter() {
   useEffect(() => {
     setPage(0);
     setExpandedId(null);
+    setRecipeEditKey(null);
   }, [lossOnly, dSearch, orderSort, sY, sM, platform, range]);
 
   /* 首次載入資料時自動跳到最新月份（僅一次；手動切換年份會重設月份） */
@@ -3893,15 +3954,16 @@ function ProfitCenter() {
         if (key === "margin") return m * (gmOf(a) - gmOf(b));
         if (key === "cost")
           return (
-            m * ((Number(costs[a.key]) || 0) - (Number(costs[b.key]) || 0))
+            m *
+            ((Number(costsEff[a.key]) || 0) - (Number(costsEff[b.key]) || 0))
           );
         return 0;
       });
-  }, [isSL, slData, spData, dMSearch, costSort, costs]);
+  }, [isSL, slData, spData, dMSearch, costSort, costsEff]);
 
   const missCost = useMemo(() => {
     const miss = matrixList.filter((p) => {
-      const v = costs[p.key];
+      const v = costsEff[p.key];
       return v === undefined || v === null || v === "" || Number(v) === 0;
     });
     return {
@@ -3909,7 +3971,7 @@ function ProfitCenter() {
       n: miss.length,
       keys: new Set(miss.map((p) => p.key)),
     };
-  }, [matrixList, costs]);
+  }, [matrixList, costsEff]);
 
   const filteredOrders = useMemo(() => {
     if (!currentData) return [];
@@ -4073,8 +4135,11 @@ function ProfitCenter() {
               },
               items: tg.items.map((i) => ({
                 ...i,
+                /* 快照凍結「有效成本」（配方算出的數字），之後改組件不影響本期 */
                 snapshotCost:
-                  costs[i.key] === undefined ? null : Number(costs[i.key]),
+                  costsEff[i.key] === undefined
+                    ? null
+                    : Number(costsEff[i.key]),
               })),
             };
           }
@@ -4112,7 +4177,15 @@ function ProfitCenter() {
   };
 
   const expC = () => {
-    const b = new Blob([JSON.stringify(costs, null, 2)], {
+    /* v2 備份：手填成本＋本平台配方＋共用原料庫一起打包 */
+    const bundle = {
+      __v: 2,
+      platform: isSL ? "sl" : "sp",
+      costs,
+      recipes,
+      components,
+    };
+    const b = new Blob([JSON.stringify(bundle, null, 2)], {
       type: "application/json",
     });
     const a = document.createElement("a");
@@ -4131,8 +4204,17 @@ function ProfitCenter() {
         const parsed = JSON.parse(ev.target.result);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
           throw new Error("not-an-object");
-        setCosts((p) => ({ ...p, ...parsed }));
-        toast("成本資料匯入成功", { type: "success" });
+        if (parsed.__v === 2) {
+          if (parsed.costs) setCosts((p) => ({ ...p, ...parsed.costs }));
+          if (parsed.recipes) setRecipes((p) => ({ ...p, ...parsed.recipes }));
+          if (parsed.components)
+            setComponents((p) => ({ ...p, ...parsed.components }));
+          toast("成本＋配方＋原料庫還原成功", { type: "success" });
+        } else {
+          /* 舊版備份＝純成本表 */
+          setCosts((p) => ({ ...p, ...parsed }));
+          toast("成本資料匯入成功", { type: "success" });
+        }
       } catch {
         toast("匯入失敗：請選擇本工具「備份」產生的 JSON 檔", {
           type: "error",
@@ -4142,6 +4224,96 @@ function ProfitCenter() {
     r.readAsText(f);
     e.target.value = "";
   };
+  /* ─── 原料庫與配方操作 ────────────────────────────────────── */
+  const compUsage = useMemo(() => {
+    const u = {};
+    [slRecipes, spRecipes].forEach((rs) =>
+      Object.values(rs || {}).forEach((lines) =>
+        (lines || []).forEach((l) => {
+          u[l.compId] = (u[l.compId] || 0) + 1;
+        })
+      )
+    );
+    return u;
+  }, [slRecipes, spRecipes]);
+  const addComponent = () => {
+    const name = safeText(newComp.name);
+    const price = Number(newComp.price);
+    if (!name) {
+      toast("請輸入組件名稱（例：高山茶 150g、禮盒A、提袋）", {
+        type: "warning",
+      });
+      return;
+    }
+    setComponents((p) => ({
+      ...p,
+      [newCompId()]: { name, price: Number.isFinite(price) ? price : 0 },
+    }));
+    setNewComp({ name: "", price: "" });
+  };
+  const commitCompField = useCallback((compId, field, value) => {
+    setComponents((p) => {
+      const c = p[compId];
+      if (!c) return p;
+      if (field === "price") {
+        const n = Number(value);
+        return {
+          ...p,
+          [compId]: { ...c, price: Number.isFinite(n) ? n : 0 },
+        };
+      }
+      const name = safeText(value);
+      return name ? { ...p, [compId]: { ...c, name } } : p;
+    });
+  }, []);
+  const deleteComponent = (compId) => {
+    const used = compUsage[compId] || 0;
+    setConfirmBox({
+      title: "刪除成本組件",
+      message:
+        `確定刪除「${components[compId]?.name || compId}」？` +
+        (used > 0
+          ? `\n⚠ 它被 ${used} 個配方使用中——刪除後那些配方會少掉這個組件的成本（以 0 計），建議先到配方裡移除引用。`
+          : ""),
+      danger: true,
+      onOk: () =>
+        setComponents((p) => {
+          const n = { ...p };
+          delete n[compId];
+          return n;
+        }),
+    });
+  };
+  const setRecipeLine = (key, idx, patch) =>
+    setRecipes((p) => {
+      const lines = [...(p[key] || [])];
+      if (patch === null) lines.splice(idx, 1);
+      else lines[idx] = { ...lines[idx], ...patch };
+      const n = { ...p };
+      if (lines.length) n[key] = lines;
+      else delete n[key];
+      return n;
+    });
+  const addRecipeLine = (key, compId) => {
+    if (!compId) return;
+    setRecipes((p) => ({
+      ...p,
+      [key]: [...(p[key] || []), { compId, qty: 1 }],
+    }));
+  };
+  const removeRecipe = (key) =>
+    setConfirmBox({
+      title: "移除配方",
+      message:
+        "移除後此商品改回「手填單位成本」（右欄輸入框），原手填值若存在會恢復生效。",
+      danger: false,
+      onOk: () =>
+        setRecipes((p) => {
+          const n = { ...p };
+          delete n[key];
+          return n;
+        }),
+    });
 
   /* ─── 匯出本期損益報表（CSV，含 BOM 供 Excel 直開） ──────── */
   const expReport = () => {
@@ -4870,8 +5042,8 @@ function ProfitCenter() {
                 spData={spData}
                 slOrders={slOrders}
                 spOrders={spOrders}
-                slCosts={slCosts}
-                spCosts={spCosts}
+                slCosts={slEffCosts}
+                spCosts={spEffCosts}
                 allMonthly={allMonthly}
                 theme={theme}
                 sY={sY}
@@ -6058,6 +6230,165 @@ function ProfitCenter() {
                       />
                     </div>
                   </div>
+                  {/* ── 成本組件（原料庫）：兩平台共用單價 ── */}
+                  <div
+                    style={{
+                      border: "1px solid var(--s3)",
+                      borderRadius: 12,
+                      padding: "12px 14px",
+                      background: "var(--s2)",
+                      marginBottom: 14,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: "var(--t2)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        marginBottom: 4,
+                      }}
+                    >
+                      <Layers size={13} color="var(--accent-text)" />
+                      成本組件（原料庫・兩平台共用）
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "var(--t4)",
+                        marginBottom: 10,
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      茶葉調價、包材換供應商＝改這裡一個數字，所有掛配方的商品自動重算；已鎖定月份因快照凍結不受影響。商品掛配方：點列尾的
+                      <Layers
+                        size={10}
+                        style={{ margin: "0 2px", verticalAlign: "-1px" }}
+                      />
+                      圖示。
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 8,
+                        alignItems: "center",
+                      }}
+                    >
+                      {Object.entries(components).map(([id, c]) => (
+                        <div
+                          key={id}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            background: "var(--s1)",
+                            border: "1px solid var(--s3)",
+                            borderRadius: 8,
+                            padding: "4px 6px",
+                          }}
+                        >
+                          <input
+                            key={id + "_" + c.name}
+                            defaultValue={c.name}
+                            aria-label="組件名稱"
+                            onBlur={(e) =>
+                              commitCompField(id, "name", e.target.value)
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") e.currentTarget.blur();
+                            }}
+                            style={{
+                              ...inp,
+                              width: 110,
+                              textAlign: "left",
+                              fontSize: 11,
+                              padding: "4px 6px",
+                              fontFamily:
+                                "'Inter','Noto Sans TC',sans-serif",
+                            }}
+                          />
+                          <FpInput
+                            field={id}
+                            label={`${c.name} 單價`}
+                            value={c.price}
+                            onCommit={(cid, v) =>
+                              commitCompField(cid, "price", v)
+                            }
+                          />
+                          {(compUsage[id] || 0) > 0 && (
+                            <span
+                              style={{
+                                fontSize: 9,
+                                fontFamily: mono,
+                                color: "var(--t3)",
+                                fontWeight: 700,
+                              }}
+                              title="被幾個配方使用"
+                            >
+                              ×{compUsage[id]}
+                            </span>
+                          )}
+                          <Btn
+                            v="ghost"
+                            aria-label={`刪除組件 ${c.name}`}
+                            onClick={() => deleteComponent(id)}
+                            style={{ padding: 2 }}
+                          >
+                            <Trash2 size={11} color="var(--t4)" />
+                          </Btn>
+                        </div>
+                      ))}
+                      <div
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                        }}
+                      >
+                        <input
+                          value={newComp.name}
+                          placeholder="新組件名稱（例：高山茶 150g）"
+                          aria-label="新組件名稱"
+                          onChange={(e) =>
+                            setNewComp((p) => ({ ...p, name: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") addComponent();
+                          }}
+                          style={{
+                            ...inp,
+                            width: 170,
+                            textAlign: "left",
+                            fontSize: 11,
+                            padding: "4px 6px",
+                            fontFamily: "'Inter','Noto Sans TC',sans-serif",
+                          }}
+                        />
+                        <input
+                          type="number"
+                          value={newComp.price}
+                          placeholder="單價"
+                          aria-label="新組件單價"
+                          onChange={(e) =>
+                            setNewComp((p) => ({
+                              ...p,
+                              price: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") addComponent();
+                          }}
+                          style={{ ...inp, width: 64, fontSize: 11 }}
+                        />
+                        <Btn v="primary" onClick={addComponent}>
+                          新增
+                        </Btn>
+                      </div>
+                    </div>
+                  </div>
                   <div style={{ position: "relative", marginBottom: 14 }}>
                     <Search
                       size={14}
@@ -6233,9 +6564,12 @@ function ProfitCenter() {
                                   ? (p.totalRevenue - p.totalCost) /
                                     p.totalRevenue
                                   : null;
+                              const hasRecipe =
+                                Array.isArray(recipes[p.key]) &&
+                                recipes[p.key].length > 0;
                               return (
+                                <React.Fragment key={p.key}>
                                 <tr
-                                  key={p.key}
                                   ref={isFirstMiss ? firstMissRef : undefined}
                                   className={miss && hs ? "rw" : ""}
                                 >
@@ -6314,7 +6648,7 @@ function ProfitCenter() {
                                         gap: 4,
                                       }}
                                     >
-                                      {miss && hs && (
+                                      {miss && hs && !hasRecipe && (
                                         <span
                                           style={{
                                             fontSize: 10,
@@ -6325,44 +6659,320 @@ function ProfitCenter() {
                                           —
                                         </span>
                                       )}
-                                      <CostInput
-                                        costKey={p.key}
-                                        label={`${p.name} ${
-                                          p.option || ""
-                                        } 單位成本`}
-                                        value={costs[p.key]}
-                                        miss={miss}
-                                        onCommit={commitCost}
-                                      />
+                                      {hasRecipe ? (
+                                        <span
+                                          role="button"
+                                          tabIndex={0}
+                                          title="配方計算值——點擊編輯配方"
+                                          onClick={() =>
+                                            setRecipeEditKey(
+                                              recipeEditKey === p.key
+                                                ? null
+                                                : p.key
+                                            )
+                                          }
+                                          onKeyDown={(e) => {
+                                            if (
+                                              e.key === "Enter" ||
+                                              e.key === " "
+                                            ) {
+                                              e.preventDefault();
+                                              setRecipeEditKey(
+                                                recipeEditKey === p.key
+                                                  ? null
+                                                  : p.key
+                                              );
+                                            }
+                                          }}
+                                          style={{
+                                            fontFamily: mono,
+                                            fontWeight: 700,
+                                            fontSize: 13,
+                                            color: "var(--accent-text)",
+                                            cursor: "pointer",
+                                            whiteSpace: "nowrap",
+                                          }}
+                                        >
+                                          {fmt$(costsEff[p.key])}
+                                          <span
+                                            style={{
+                                              fontSize: 9,
+                                              marginLeft: 4,
+                                              color: "var(--t3)",
+                                              fontWeight: 600,
+                                            }}
+                                          >
+                                            配方
+                                          </span>
+                                        </span>
+                                      ) : (
+                                        <CostInput
+                                          costKey={p.key}
+                                          label={`${p.name} ${
+                                            p.option || ""
+                                          } 單位成本`}
+                                          value={costs[p.key]}
+                                          miss={miss}
+                                          onCommit={commitCost}
+                                        />
+                                      )}
                                     </div>
                                   </td>
                                   <td style={{ ...td2, textAlign: "center" }}>
-                                    <Btn
-                                      v="ghost"
-                                      aria-label={`刪除 ${p.name} 的成本設定`}
-                                      onClick={() =>
-                                        setConfirmBox({
-                                          title: "刪除成本設定",
-                                          message: `確定刪除「${p.name}${
-                                            p.option &&
-                                            p.option !== "標準規格"
-                                              ? `（${p.option}）`
-                                              : ""
-                                          }」的單位成本？`,
-                                          danger: true,
-                                          onOk: () => {
-                                            const n = { ...costs };
-                                            delete n[p.key];
-                                            setCosts(n);
-                                          },
-                                        })
-                                      }
-                                      style={{ padding: "2px" }}
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        gap: 2,
+                                        justifyContent: "center",
+                                      }}
                                     >
-                                      <Trash2 size={12} color="var(--t4)" />
-                                    </Btn>
+                                      <Btn
+                                        v="ghost"
+                                        aria-label={`編輯 ${p.name} 的配方`}
+                                        title="配方（組件×用量）"
+                                        onClick={() =>
+                                          setRecipeEditKey(
+                                            recipeEditKey === p.key
+                                              ? null
+                                              : p.key
+                                          )
+                                        }
+                                        style={{ padding: "2px" }}
+                                      >
+                                        <Layers
+                                          size={12}
+                                          color={
+                                            hasRecipe
+                                              ? "var(--accent-text)"
+                                              : "var(--t4)"
+                                          }
+                                        />
+                                      </Btn>
+                                      <Btn
+                                        v="ghost"
+                                        aria-label={`刪除 ${p.name} 的成本設定`}
+                                        onClick={() =>
+                                          setConfirmBox({
+                                            title: "刪除成本設定",
+                                            message: `確定刪除「${p.name}${
+                                              p.option &&
+                                              p.option !== "標準規格"
+                                                ? `（${p.option}）`
+                                                : ""
+                                            }」的手填單位成本？${
+                                              hasRecipe
+                                                ? "\n（此商品掛有配方，配方不受影響、仍以配方計算）"
+                                                : ""
+                                            }`,
+                                            danger: true,
+                                            onOk: () => {
+                                              const n = { ...costs };
+                                              delete n[p.key];
+                                              setCosts(n);
+                                            },
+                                          })
+                                        }
+                                        style={{ padding: "2px" }}
+                                      >
+                                        <Trash2 size={12} color="var(--t4)" />
+                                      </Btn>
+                                    </div>
                                   </td>
                                 </tr>
+                                {recipeEditKey === p.key && (
+                                  <tr>
+                                    <td
+                                      colSpan={7}
+                                      style={{
+                                        ...td2,
+                                        background: "var(--s2)",
+                                        padding: "14px 18px",
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontSize: 12,
+                                          fontWeight: 700,
+                                          color: "var(--t1)",
+                                          marginBottom: 8,
+                                        }}
+                                      >
+                                        配方：{p.name}
+                                        {p.option && p.option !== "標準規格"
+                                          ? `（${p.option}）`
+                                          : ""}
+                                        <span
+                                          style={{
+                                            color: "var(--t3)",
+                                            fontWeight: 500,
+                                            marginLeft: 8,
+                                            fontSize: 11,
+                                          }}
+                                        >
+                                          單位成本＝各組件單價×用量加總
+                                        </span>
+                                      </div>
+                                      {(recipes[p.key] || []).map((l, li) => {
+                                        const comp = components[l.compId];
+                                        return (
+                                          <div
+                                            key={li}
+                                            style={{
+                                              display: "flex",
+                                              alignItems: "center",
+                                              gap: 8,
+                                              padding: "3px 0",
+                                              fontSize: 12,
+                                            }}
+                                          >
+                                            <span
+                                              style={{
+                                                minWidth: 150,
+                                                color: comp
+                                                  ? "var(--t1)"
+                                                  : "var(--dn)",
+                                                fontWeight: 600,
+                                              }}
+                                            >
+                                              {comp
+                                                ? comp.name
+                                                : "（組件已刪除，成本以 0 計）"}
+                                            </span>
+                                            <span
+                                              style={{
+                                                color: "var(--t4)",
+                                                fontSize: 11,
+                                              }}
+                                            >
+                                              ×
+                                            </span>
+                                            <FpInput
+                                              field={li}
+                                              label="用量"
+                                              value={l.qty}
+                                              onCommit={(idx, v) =>
+                                                setRecipeLine(p.key, idx, {
+                                                  qty: Number(v) || 0,
+                                                })
+                                              }
+                                            />
+                                            <span
+                                              style={{
+                                                fontFamily: mono,
+                                                color: "var(--t2)",
+                                                fontSize: 11,
+                                                minWidth: 88,
+                                                textAlign: "right",
+                                              }}
+                                            >
+                                              ={" "}
+                                              {fmt$(
+                                                (Number(comp?.price) || 0) *
+                                                  (Number(l.qty) || 0)
+                                              )}
+                                            </span>
+                                            <Btn
+                                              v="ghost"
+                                              aria-label="移除此組件"
+                                              onClick={() =>
+                                                setRecipeLine(p.key, li, null)
+                                              }
+                                              style={{ padding: 2 }}
+                                            >
+                                              <X
+                                                size={12}
+                                                color="var(--t4)"
+                                              />
+                                            </Btn>
+                                          </div>
+                                        );
+                                      })}
+                                      <div
+                                        style={{
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: 8,
+                                          marginTop: 8,
+                                          flexWrap: "wrap",
+                                        }}
+                                      >
+                                        <select
+                                          defaultValue=""
+                                          aria-label="加入組件"
+                                          onChange={(e) => {
+                                            addRecipeLine(
+                                              p.key,
+                                              e.target.value
+                                            );
+                                            e.target.value = "";
+                                          }}
+                                          style={{ ...sel, fontSize: 11 }}
+                                        >
+                                          <option value="" disabled>
+                                            ＋ 加入組件…
+                                          </option>
+                                          {Object.entries(components).map(
+                                            ([id, c]) => (
+                                              <option key={id} value={id}>
+                                                {c.name}（{fmt$(c.price)}）
+                                              </option>
+                                            )
+                                          )}
+                                        </select>
+                                        <span
+                                          style={{
+                                            fontFamily: mono,
+                                            fontWeight: 800,
+                                            fontSize: 13,
+                                            color: "var(--accent-text)",
+                                            marginLeft: "auto",
+                                          }}
+                                        >
+                                          合計{" "}
+                                          {fmt$(
+                                            recipeCost(
+                                              recipes[p.key],
+                                              components
+                                            )
+                                          )}
+                                        </span>
+                                        {(recipes[p.key] || []).length > 0 && (
+                                          <Btn
+                                            v="danger"
+                                            onClick={() =>
+                                              removeRecipe(p.key)
+                                            }
+                                            style={{ fontSize: 10 }}
+                                          >
+                                            移除配方
+                                          </Btn>
+                                        )}
+                                        <Btn
+                                          onClick={() =>
+                                            setRecipeEditKey(null)
+                                          }
+                                          style={{ fontSize: 10 }}
+                                        >
+                                          完成
+                                        </Btn>
+                                      </div>
+                                      {Object.keys(components).length ===
+                                        0 && (
+                                        <div
+                                          style={{
+                                            fontSize: 11,
+                                            color: "var(--wn)",
+                                            marginTop: 6,
+                                          }}
+                                        >
+                                          原料庫還沒有組件——先在上方「成本組件」新增（例：高山茶
+                                          150g、茶包袋、禮盒A、提袋）
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )}
+                                </React.Fragment>
                               );
                             });
                           })()
@@ -6755,8 +7365,8 @@ function ProfitCenter() {
                                       order={o}
                                       isSL={isSL}
                                       slFp={slFp}
-                                      slCosts={slCosts}
-                                      spCosts={spCosts}
+                                      slCosts={slEffCosts}
+                                      spCosts={spEffCosts}
                                     />
                                   </td>
                                 </tr>
