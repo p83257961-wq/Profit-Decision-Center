@@ -310,6 +310,21 @@ const resolveCosts = (costs, recipes, components) => {
 };
 const newCompId = () =>
   `cmp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+/* 全歷史用途索引：商品名對照（找回無本期銷售的成本條目名稱）＋最後售出日（清理提醒） */
+const buildUsage = (orders) => {
+  const nameMap = {};
+  const lastSold = {};
+  let maxDate = "";
+  Object.values(orders || {}).forEach((o) => {
+    const d = String(o.date || "");
+    if (d > maxDate) maxDate = d;
+    (o.items || []).forEach((i) => {
+      nameMap[i.key] = { name: i.name, option: i.option };
+      if (!lastSold[i.key] || d > lastSold[i.key]) lastSold[i.key] = d;
+    });
+  });
+  return { nameMap, lastSold, maxDate };
+};
 /* 按月費用（分潤）更新：空值＝刪除該月 key */
 const monthlyUpd = (setter, key, value) =>
   setter((prev) => {
@@ -2567,6 +2582,14 @@ function ProfitCenter() {
   const [expandedId, setExpandedId] = useState(null);
   const [recipeEditKey, setRecipeEditKey] = useState(null);
   const [newComp, setNewComp] = useState({ name: "", price: "", cat: "" });
+  /* 原料庫空的時候預設展開（引導新手），有內容則收合省空間 */
+  const [compPanelOpen, setCompPanelOpen] = useState(
+    () => Object.keys(gl(SK.components, {})).length === 0
+  );
+  const [compCatOpen, setCompCatOpen] = useState({});
+  const [compSearch, setCompSearch] = useState("");
+  const dCompSearch = useDebounced(compSearch);
+  const [cleanupOnly, setCleanupOnly] = useState(false);
 
   const fRef = useRef({});
   const cRef = useRef(null);
@@ -3933,14 +3956,56 @@ function ProfitCenter() {
     setSM(dates[0].substring(5, 7));
   }, [slOrders, spOrders]);
 
+  const slUsage = useMemo(() => buildUsage(slOrders), [slOrders]);
+  const spUsage = useMemo(() => buildUsage(spOrders), [spOrders]);
+
   const matrixList = useMemo(() => {
-    const source = isSL ? slData?.matrixList : spData?.uniqueProducts;
-    if (!source) return [];
+    const source = (isSL ? slData?.matrixList : spData?.uniqueProducts) || [];
+    const usage = isSL ? slUsage : spUsage;
+    /* 孤兒條目：有成本/配方但本期無銷售的商品——蝦皮先前完全看不到、無法刪除。
+       用全歷史訂單找回商品名；查無紀錄則顯示 key */
+    const known = new Set(source.map((p) => p.key));
+    const orphanKeys = [
+      ...new Set([...Object.keys(costs), ...Object.keys(recipes)]),
+    ].filter((k) => !known.has(k));
+    const orphans = orphanKeys.map((k) => {
+      const nm = usage.nameMap[k];
+      const parts = isSL ? k.split("_") : null;
+      return {
+        key: k,
+        name: nm?.name || (isSL ? parts[0] : `（查無商品名）${k}`),
+        option:
+          nm?.option ?? (isSL ? parts?.[1]?.trim() || "標準規格" : ""),
+        soldQty: 0,
+        profitContribution: 0,
+        estProfit: 0,
+        totalRevenue: 0,
+        totalCost: 0,
+      };
+    });
+    const dayMs = 86400000;
+    const withUsage = [...source, ...orphans].map((p) => {
+      const last = usage.lastSold[p.key] || null;
+      const staleDays =
+        last && usage.maxDate
+          ? Math.floor(
+              (Date.parse(usage.maxDate) - Date.parse(last)) / dayMs
+            )
+          : null;
+      return {
+        ...p,
+        lastSold: last,
+        staleDays,
+        neverSold: !last,
+        stale: !last || (staleDays !== null && staleDays >= 180),
+      };
+    });
     const gmOf = (p) =>
       p.totalRevenue > 0
         ? (p.totalRevenue - p.totalCost) / p.totalRevenue
         : -Infinity;
-    return source
+    return withUsage
+      .filter((p) => !cleanupOnly || p.stale)
       .filter(
         (p) =>
           !dMSearch ||
@@ -3967,7 +4032,62 @@ function ProfitCenter() {
           );
         return 0;
       });
-  }, [isSL, slData, spData, dMSearch, costSort, costsEff]);
+  }, [
+    isSL,
+    slData,
+    spData,
+    dMSearch,
+    costSort,
+    costsEff,
+    costs,
+    recipes,
+    slUsage,
+    spUsage,
+    cleanupOnly,
+  ]);
+
+  /* 一鍵清理：刪除目前清單（久未使用過濾後）的手填成本與配方，可復原 */
+  const bulkCleanStale = () => {
+    const keys = matrixList.map((p) => p.key);
+    if (!keys.length) return;
+    setConfirmBox({
+      title: "清除久未使用條目",
+      message: `將刪除目前清單中 ${keys.length} 項的手填成本與配方。\n訂單紀錄不受影響；之後若再售出，商品會重新出現在清單（成本需重填）。\n10 秒內可在右下角通知按「復原」。`,
+      danger: true,
+      onOk: () => {
+        const removedCosts = {};
+        const removedRecipes = {};
+        setCosts((p) => {
+          const n = { ...p };
+          keys.forEach((k) => {
+            if (n[k] !== undefined) {
+              removedCosts[k] = n[k];
+              delete n[k];
+            }
+          });
+          return n;
+        });
+        setRecipes((p) => {
+          const n = { ...p };
+          keys.forEach((k) => {
+            if (n[k] !== undefined) {
+              removedRecipes[k] = n[k];
+              delete n[k];
+            }
+          });
+          return n;
+        });
+        toast(`已清除 ${keys.length} 項成本/配方`, {
+          type: "info",
+          action: () => {
+            setCosts((p) => ({ ...p, ...removedCosts }));
+            setRecipes((p) => ({ ...p, ...removedRecipes }));
+          },
+          actionLabel: "復原",
+        });
+      },
+    });
+  };
 
   const missCost = useMemo(() => {
     const miss = matrixList.filter((p) => {
@@ -6282,6 +6402,16 @@ function ProfitCenter() {
                     }}
                   >
                     <div
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={compPanelOpen}
+                      onClick={() => setCompPanelOpen((v) => !v)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setCompPanelOpen((v) => !v);
+                        }
+                      }}
                       style={{
                         fontSize: 11,
                         fontWeight: 700,
@@ -6289,61 +6419,171 @@ function ProfitCenter() {
                         display: "flex",
                         alignItems: "center",
                         gap: 6,
-                        marginBottom: 4,
+                        cursor: "pointer",
+                        userSelect: "none",
                       }}
                     >
+                      {compPanelOpen ? (
+                        <ChevronUp size={13} color="var(--t3)" />
+                      ) : (
+                        <ChevronDown size={13} color="var(--t3)" />
+                      )}
                       <Layers size={13} color="var(--accent-text)" />
                       成本組件（原料庫・兩平台共用）
+                      <span
+                        style={{
+                          fontFamily: mono,
+                          color: "var(--t3)",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {Object.keys(components).length} 顆・
+                        {compGroups.length} 分類
+                      </span>
+                      {!compPanelOpen && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "var(--t4)",
+                            fontWeight: 500,
+                            marginLeft: "auto",
+                          }}
+                        >
+                          點擊展開管理
+                        </span>
+                      )}
                     </div>
-                    <div
-                      style={{
-                        fontSize: 10,
-                        color: "var(--t4)",
-                        marginBottom: 10,
-                        lineHeight: 1.6,
-                      }}
-                    >
-                      茶葉調價、包材換供應商＝改這裡一個數字，所有掛配方的商品自動重算；已鎖定月份因快照凍結不受影響。商品掛配方：點列尾的
-                      <Layers
-                        size={10}
-                        style={{ margin: "0 2px", verticalAlign: "-1px" }}
-                      />
-                      圖示。
-                    </div>
+                    {compPanelOpen && (
+                      <>
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: "var(--t4)",
+                            margin: "6px 0 10px",
+                            lineHeight: 1.6,
+                          }}
+                        >
+                          改這裡一個單價＝所有掛配方的商品自動重算（已鎖定月份不受影響）。商品掛配方：點商品列尾的
+                          <Layers
+                            size={10}
+                            style={{ margin: "0 2px", verticalAlign: "-1px" }}
+                          />
+                          圖示。
+                        </div>
+                        <div style={{ position: "relative", marginBottom: 8 }}>
+                          <Search
+                            size={12}
+                            color="var(--t4)"
+                            style={{
+                              position: "absolute",
+                              left: 10,
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                            }}
+                          />
+                          <input
+                            type="text"
+                            value={compSearch}
+                            placeholder="搜尋組件名稱或分類..."
+                            aria-label="搜尋成本組件"
+                            onChange={(e) => setCompSearch(e.target.value)}
+                            style={{
+                              ...inp,
+                              width: "100%",
+                              maxWidth: 300,
+                              textAlign: "left",
+                              paddingLeft: 30,
+                              borderRadius: 8,
+                              padding: "7px 10px 7px 30px",
+                              fontSize: 12,
+                            }}
+                          />
+                        </div>
                     <datalist id="comp-cats">
                       {compCats.map((c) => (
                         <option key={c} value={c} />
                       ))}
                     </datalist>
-                    {compGroups.map(([cat, list]) => (
-                      <div key={cat} style={{ marginBottom: 8 }}>
+                    {compGroups
+                      .map(([cat, list]) => {
+                        const q = dCompSearch.trim().toLowerCase();
+                        const shown = q
+                          ? list.filter(
+                              ([, c]) =>
+                                c.name.toLowerCase().includes(q) ||
+                                (c.cat || "").toLowerCase().includes(q)
+                            )
+                          : list;
+                        return [cat, shown];
+                      })
+                      .filter(([, shown]) => shown.length > 0)
+                      .map(([cat, list]) => {
+                        const catOpen =
+                          !!compCatOpen[cat] || !!dCompSearch.trim();
+                        return (
+                      <div
+                        key={cat}
+                        style={{
+                          border: "1px solid var(--s3)",
+                          borderRadius: 10,
+                          marginBottom: 6,
+                          background: "var(--s1)",
+                          overflow: "hidden",
+                        }}
+                      >
                         <div
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={catOpen}
+                          onClick={() =>
+                            setCompCatOpen((p) => ({ ...p, [cat]: !p[cat] }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setCompCatOpen((p) => ({
+                                ...p,
+                                [cat]: !p[cat],
+                              }));
+                            }
+                          }}
                           style={{
-                            fontSize: 10,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "8px 10px",
+                            cursor: "pointer",
+                            fontSize: 11,
                             fontWeight: 800,
-                            color: "var(--accent-text)",
-                            marginBottom: 4,
-                            letterSpacing: "0.04em",
+                            userSelect: "none",
                           }}
                         >
-                          {cat}
+                          {catOpen ? (
+                            <ChevronUp size={12} color="var(--t3)" />
+                          ) : (
+                            <ChevronDown size={12} color="var(--t3)" />
+                          )}
+                          <span style={{ color: "var(--accent-text)" }}>
+                            {cat}
+                          </span>
                           <span
                             style={{
-                              color: "var(--t4)",
+                              color: "var(--t3)",
                               fontWeight: 600,
-                              marginLeft: 6,
                               fontFamily: mono,
                             }}
                           >
                             {list.length}
                           </span>
                         </div>
+                        {catOpen && (
                         <div
                           style={{
                             display: "flex",
                             flexWrap: "wrap",
                             gap: 8,
                             alignItems: "center",
+                            padding: "0 10px 10px",
                           }}
                         >
                           {list.map(([id, c]) => (
@@ -6435,8 +6675,10 @@ function ProfitCenter() {
                             </div>
                           ))}
                         </div>
+                        )}
                       </div>
-                    ))}
+                        );
+                      })}
                     <div
                       style={{
                         display: "flex",
@@ -6506,35 +6748,71 @@ function ProfitCenter() {
                         新增
                       </Btn>
                     </div>
+                      </>
+                    )}
                   </div>
-                  <div style={{ position: "relative", marginBottom: 14 }}>
-                    <Search
-                      size={14}
-                      color="var(--t4)"
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                      gap: 10,
+                      marginBottom: 14,
+                    }}
+                  >
+                    <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 360 }}>
+                      <Search
+                        size={14}
+                        color="var(--t4)"
+                        style={{
+                          position: "absolute",
+                          left: 12,
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                        }}
+                      />
+                      <input
+                        type="text"
+                        placeholder="搜尋商品名稱或規格 ..."
+                        aria-label="搜尋商品名稱或規格"
+                        value={mSearch}
+                        onChange={(e) => setMSearch(e.target.value)}
+                        style={{
+                          ...inp,
+                          width: "100%",
+                          textAlign: "left",
+                          paddingLeft: 36,
+                          borderRadius: 10,
+                          padding: "10px 12px 10px 36px",
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                    <label
                       style={{
-                        position: "absolute",
-                        left: 12,
-                        top: "50%",
-                        transform: "translateY(-50%)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--t3)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
                       }}
-                    />
-                    <input
-                      type="text"
-                      placeholder="搜尋商品名稱或規格 ..."
-                      aria-label="搜尋商品名稱或規格"
-                      value={mSearch}
-                      onChange={(e) => setMSearch(e.target.value)}
-                      style={{
-                        ...inp,
-                        width: "100%",
-                        maxWidth: 360,
-                        textAlign: "left",
-                        paddingLeft: 36,
-                        borderRadius: 10,
-                        padding: "10px 12px 10px 36px",
-                        fontSize: 13,
-                      }}
-                    />
+                    >
+                      <input
+                        type="checkbox"
+                        checked={cleanupOnly}
+                        onChange={(e) => setCleanupOnly(e.target.checked)}
+                        style={{ accentColor: "var(--wn)" }}
+                      />{" "}
+                      只看可清理（180 天未售/無紀錄）
+                    </label>
+                    {cleanupOnly && matrixList.length > 0 && (
+                      <Btn v="danger" onClick={bulkCleanStale}>
+                        <Trash2 size={11} /> 清除清單全部 {matrixList.length} 項
+                      </Btn>
+                    )}
                   </div>
                   <div
                     style={{
@@ -6696,13 +6974,36 @@ function ProfitCenter() {
                                       ...td2,
                                       fontWeight: 600,
                                       maxWidth: 260,
-                                      whiteSpace: "nowrap",
                                       overflow: "hidden",
-                                      textOverflow: "ellipsis",
                                     }}
                                     title={p.name}
                                   >
-                                    {p.name}
+                                    <div
+                                      style={{
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                      }}
+                                    >
+                                      {p.name}
+                                    </div>
+                                    {p.stale && (
+                                      <div
+                                        style={{
+                                          fontSize: 9,
+                                          fontWeight: 700,
+                                          marginTop: 2,
+                                          whiteSpace: "nowrap",
+                                          color: p.neverSold
+                                            ? "var(--t3)"
+                                            : "var(--wn)",
+                                        }}
+                                      >
+                                        {p.neverSold
+                                          ? "無銷售紀錄"
+                                          : `久未售出・最後 ${p.lastSold}（${p.staleDays} 天前）`}
+                                      </div>
+                                    )}
                                   </td>
                                   <td
                                     style={{
