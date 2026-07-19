@@ -143,6 +143,14 @@ const fmt$ = (v) =>
     maximumFractionDigits: 0,
   }).format(Number(v || 0));
 const fmtP = (v) => `${((Number(v) || 0) * 100).toFixed(2)}%`;
+/* 帶小數的金額（原料庫/配方用）：最多 2 位、整數不補零 */
+const fmt$d = (v) =>
+  new Intl.NumberFormat("zh-TW", {
+    style: "currency",
+    currency: "TWD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(Number(v || 0));
 const numOrZero = (v) => {
   const n = parseFloat(String(v ?? "").replace(/,/g, ""));
   return Number.isFinite(n) ? n : 0;
@@ -2558,7 +2566,7 @@ function ProfitCenter() {
   const [dragOver, setDragOver] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [recipeEditKey, setRecipeEditKey] = useState(null);
-  const [newComp, setNewComp] = useState({ name: "", price: "" });
+  const [newComp, setNewComp] = useState({ name: "", price: "", cat: "" });
 
   const fRef = useRef({});
   const cRef = useRef(null);
@@ -4247,9 +4255,13 @@ function ProfitCenter() {
     }
     setComponents((p) => ({
       ...p,
-      [newCompId()]: { name, price: Number.isFinite(price) ? price : 0 },
+      [newCompId()]: {
+        name,
+        price: Number.isFinite(price) ? price : 0,
+        cat: safeText(newComp.cat),
+      },
     }));
-    setNewComp({ name: "", price: "" });
+    setNewComp({ name: "", price: "", cat: "" });
   };
   const commitCompField = useCallback((compId, field, value) => {
     setComponents((p) => {
@@ -4262,10 +4274,39 @@ function ProfitCenter() {
           [compId]: { ...c, price: Number.isFinite(n) ? n : 0 },
         };
       }
+      if (field === "cat") {
+        return { ...p, [compId]: { ...c, cat: safeText(value) } };
+      }
       const name = safeText(value);
       return name ? { ...p, [compId]: { ...c, name } } : p;
     });
   }, []);
+  /* 原料庫分組（未分類排最後）與既有分類清單（datalist 建議用） */
+  const compGroups = useMemo(() => {
+    const g = {};
+    Object.entries(components).forEach(([id, c]) => {
+      const cat = safeText(c.cat) || "未分類";
+      (g[cat] = g[cat] || []).push([id, c]);
+    });
+    return Object.entries(g).sort((a, b) =>
+      a[0] === "未分類"
+        ? 1
+        : b[0] === "未分類"
+        ? -1
+        : a[0].localeCompare(b[0], "zh-Hant")
+    );
+  }, [components]);
+  const compCats = useMemo(
+    () =>
+      [
+        ...new Set(
+          Object.values(components)
+            .map((c) => safeText(c.cat))
+            .filter(Boolean)
+        ),
+      ].sort((a, b) => a.localeCompare(b, "zh-Hant")),
+    [components]
+  );
   const deleteComponent = (compId) => {
     const used = compUsage[compId] || 0;
     setConfirmBox({
@@ -6269,124 +6310,201 @@ function ProfitCenter() {
                       />
                       圖示。
                     </div>
+                    <datalist id="comp-cats">
+                      {compCats.map((c) => (
+                        <option key={c} value={c} />
+                      ))}
+                    </datalist>
+                    {compGroups.map(([cat, list]) => (
+                      <div key={cat} style={{ marginBottom: 8 }}>
+                        <div
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 800,
+                            color: "var(--accent-text)",
+                            marginBottom: 4,
+                            letterSpacing: "0.04em",
+                          }}
+                        >
+                          {cat}
+                          <span
+                            style={{
+                              color: "var(--t4)",
+                              fontWeight: 600,
+                              marginLeft: 6,
+                              fontFamily: mono,
+                            }}
+                          >
+                            {list.length}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 8,
+                            alignItems: "center",
+                          }}
+                        >
+                          {list.map(([id, c]) => (
+                            <div
+                              key={id}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                background: "var(--s1)",
+                                border: "1px solid var(--s3)",
+                                borderRadius: 8,
+                                padding: "4px 6px",
+                              }}
+                            >
+                              <input
+                                key={id + "_" + c.name}
+                                defaultValue={c.name}
+                                aria-label="組件名稱"
+                                onBlur={(e) =>
+                                  commitCompField(id, "name", e.target.value)
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter")
+                                    e.currentTarget.blur();
+                                }}
+                                style={{
+                                  ...inp,
+                                  width: 110,
+                                  textAlign: "left",
+                                  fontSize: 11,
+                                  padding: "4px 6px",
+                                  fontFamily:
+                                    "'Inter','Noto Sans TC',sans-serif",
+                                }}
+                              />
+                              <FpInput
+                                field={id}
+                                label={`${c.name} 單價`}
+                                value={c.price}
+                                onCommit={(cid, v) =>
+                                  commitCompField(cid, "price", v)
+                                }
+                              />
+                              <input
+                                key={id + "_c_" + (c.cat || "")}
+                                defaultValue={c.cat || ""}
+                                list="comp-cats"
+                                placeholder="分類"
+                                aria-label={`${c.name} 分類`}
+                                onBlur={(e) =>
+                                  commitCompField(id, "cat", e.target.value)
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter")
+                                    e.currentTarget.blur();
+                                }}
+                                style={{
+                                  ...inp,
+                                  width: 76,
+                                  textAlign: "left",
+                                  fontSize: 10,
+                                  padding: "4px 6px",
+                                  fontFamily:
+                                    "'Inter','Noto Sans TC',sans-serif",
+                                }}
+                              />
+                              {(compUsage[id] || 0) > 0 && (
+                                <span
+                                  style={{
+                                    fontSize: 9,
+                                    fontFamily: mono,
+                                    color: "var(--t3)",
+                                    fontWeight: 700,
+                                  }}
+                                  title="被幾個配方使用"
+                                >
+                                  ×{compUsage[id]}
+                                </span>
+                              )}
+                              <Btn
+                                v="ghost"
+                                aria-label={`刪除組件 ${c.name}`}
+                                onClick={() => deleteComponent(id)}
+                                style={{ padding: 2 }}
+                              >
+                                <Trash2 size={11} color="var(--t4)" />
+                              </Btn>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                     <div
                       style={{
                         display: "flex",
                         flexWrap: "wrap",
-                        gap: 8,
                         alignItems: "center",
+                        gap: 4,
+                        marginTop: compGroups.length ? 4 : 0,
                       }}
                     >
-                      {Object.entries(components).map(([id, c]) => (
-                        <div
-                          key={id}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 4,
-                            background: "var(--s1)",
-                            border: "1px solid var(--s3)",
-                            borderRadius: 8,
-                            padding: "4px 6px",
-                          }}
-                        >
-                          <input
-                            key={id + "_" + c.name}
-                            defaultValue={c.name}
-                            aria-label="組件名稱"
-                            onBlur={(e) =>
-                              commitCompField(id, "name", e.target.value)
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") e.currentTarget.blur();
-                            }}
-                            style={{
-                              ...inp,
-                              width: 110,
-                              textAlign: "left",
-                              fontSize: 11,
-                              padding: "4px 6px",
-                              fontFamily:
-                                "'Inter','Noto Sans TC',sans-serif",
-                            }}
-                          />
-                          <FpInput
-                            field={id}
-                            label={`${c.name} 單價`}
-                            value={c.price}
-                            onCommit={(cid, v) =>
-                              commitCompField(cid, "price", v)
-                            }
-                          />
-                          {(compUsage[id] || 0) > 0 && (
-                            <span
-                              style={{
-                                fontSize: 9,
-                                fontFamily: mono,
-                                color: "var(--t3)",
-                                fontWeight: 700,
-                              }}
-                              title="被幾個配方使用"
-                            >
-                              ×{compUsage[id]}
-                            </span>
-                          )}
-                          <Btn
-                            v="ghost"
-                            aria-label={`刪除組件 ${c.name}`}
-                            onClick={() => deleteComponent(id)}
-                            style={{ padding: 2 }}
-                          >
-                            <Trash2 size={11} color="var(--t4)" />
-                          </Btn>
-                        </div>
-                      ))}
-                      <div
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
+                      <input
+                        value={newComp.name}
+                        placeholder="新組件名稱（例：高山茶 150g）"
+                        aria-label="新組件名稱"
+                        onChange={(e) =>
+                          setNewComp((p) => ({ ...p, name: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") addComponent();
                         }}
-                      >
-                        <input
-                          value={newComp.name}
-                          placeholder="新組件名稱（例：高山茶 150g）"
-                          aria-label="新組件名稱"
-                          onChange={(e) =>
-                            setNewComp((p) => ({ ...p, name: e.target.value }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") addComponent();
-                          }}
-                          style={{
-                            ...inp,
-                            width: 170,
-                            textAlign: "left",
-                            fontSize: 11,
-                            padding: "4px 6px",
-                            fontFamily: "'Inter','Noto Sans TC',sans-serif",
-                          }}
-                        />
-                        <input
-                          type="number"
-                          value={newComp.price}
-                          placeholder="單價"
-                          aria-label="新組件單價"
-                          onChange={(e) =>
-                            setNewComp((p) => ({
-                              ...p,
-                              price: e.target.value,
-                            }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") addComponent();
-                          }}
-                          style={{ ...inp, width: 64, fontSize: 11 }}
-                        />
-                        <Btn v="primary" onClick={addComponent}>
-                          新增
-                        </Btn>
-                      </div>
+                        style={{
+                          ...inp,
+                          width: 170,
+                          textAlign: "left",
+                          fontSize: 11,
+                          padding: "4px 6px",
+                          fontFamily: "'Inter','Noto Sans TC',sans-serif",
+                        }}
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={newComp.price}
+                        placeholder="單價"
+                        aria-label="新組件單價"
+                        onChange={(e) =>
+                          setNewComp((p) => ({
+                            ...p,
+                            price: e.target.value,
+                          }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") addComponent();
+                        }}
+                        style={{ ...inp, width: 72, fontSize: 11 }}
+                      />
+                      <input
+                        value={newComp.cat}
+                        list="comp-cats"
+                        placeholder="分類（例：茶葉）"
+                        aria-label="新組件分類"
+                        onChange={(e) =>
+                          setNewComp((p) => ({ ...p, cat: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") addComponent();
+                        }}
+                        style={{
+                          ...inp,
+                          width: 110,
+                          textAlign: "left",
+                          fontSize: 11,
+                          padding: "4px 6px",
+                          fontFamily: "'Inter','Noto Sans TC',sans-serif",
+                        }}
+                      />
+                      <Btn v="primary" onClick={addComponent}>
+                        新增
+                      </Btn>
                     </div>
                   </div>
                   <div style={{ position: "relative", marginBottom: 14 }}>
@@ -6693,7 +6811,7 @@ function ProfitCenter() {
                                             whiteSpace: "nowrap",
                                           }}
                                         >
-                                          {fmt$(costsEff[p.key])}
+                                          {fmt$d(costsEff[p.key])}
                                           <span
                                             style={{
                                               fontSize: 9,
@@ -6866,7 +6984,7 @@ function ProfitCenter() {
                                               }}
                                             >
                                               ={" "}
-                                              {fmt$(
+                                              {fmt$d(
                                                 (Number(comp?.price) || 0) *
                                                   (Number(l.qty) || 0)
                                               )}
@@ -6911,13 +7029,15 @@ function ProfitCenter() {
                                           <option value="" disabled>
                                             ＋ 加入組件…
                                           </option>
-                                          {Object.entries(components).map(
-                                            ([id, c]) => (
-                                              <option key={id} value={id}>
-                                                {c.name}（{fmt$(c.price)}）
-                                              </option>
-                                            )
-                                          )}
+                                          {compGroups.map(([cat, list]) => (
+                                            <optgroup key={cat} label={cat}>
+                                              {list.map(([id, c]) => (
+                                                <option key={id} value={id}>
+                                                  {c.name}（{fmt$d(c.price)}）
+                                                </option>
+                                              ))}
+                                            </optgroup>
+                                          ))}
                                         </select>
                                         <span
                                           style={{
@@ -6929,7 +7049,7 @@ function ProfitCenter() {
                                           }}
                                         >
                                           合計{" "}
-                                          {fmt$(
+                                          {fmt$d(
                                             recipeCost(
                                               recipes[p.key],
                                               components
