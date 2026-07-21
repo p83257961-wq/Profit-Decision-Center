@@ -2736,6 +2736,7 @@ function ProfitCenter() {
   const [compSearch, setCompSearch] = useState("");
   const dCompSearch = useDebounced(compSearch);
   const [cleanupOnly, setCleanupOnly] = useState(false);
+  const [soldOnly, setSoldOnly] = useState(false);
 
   const fRef = useRef({});
   const cRef = useRef(null);
@@ -4152,6 +4153,7 @@ function ProfitCenter() {
         : -Infinity;
     return withUsage
       .filter((p) => !cleanupOnly || p.stale)
+      .filter((p) => !soldOnly || (p.soldQty || 0) > 0)
       .filter(
         (p) =>
           !dMSearch ||
@@ -4190,6 +4192,7 @@ function ProfitCenter() {
     slUsage,
     spUsage,
     cleanupOnly,
+    soldOnly,
   ]);
 
   /* 一鍵清理：刪除目前清單（久未使用過濾後）的手填成本與配方，可復原 */
@@ -6953,6 +6956,26 @@ function ProfitCenter() {
                         style={{ accentColor: "var(--wn)" }}
                       />{" "}
                       只看可清理（180 天未售/無紀錄）
+                    </label>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--t3)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={soldOnly}
+                        onChange={(e) => setSoldOnly(e.target.checked)}
+                        style={{ accentColor }}
+                      />{" "}
+                      只顯示本期有銷售
                     </label>
                     {cleanupOnly && matrixList.length > 0 && (
                       <Btn v="danger" onClick={bulkCleanStale}>
