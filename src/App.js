@@ -23,7 +23,6 @@ import {
   PieChart,
   RotateCcw,
   Lock,
-  Unlock,
   Loader2,
   Gift,
   Zap,
@@ -890,34 +889,43 @@ const CompPicker = React.memo(function CompPicker({ compGroups, onPick }) {
 });
 
 /* ─── 門市 POS Dashboard ────────────────────────────────────── */
+/* 視覺語彙與官網／蝦皮同一套：Hero（狀態列＋大字淨利＋淨利率＋Waterfall）→ KPI 卡 → 表格 */
 const posCard = {
   background: "var(--s1)",
   border: "1px solid var(--s3)",
   borderRadius: 16,
-  padding: 18,
+  padding: 24,
 };
+/* 與官網 KPI 卡同規格：Lbl ＋ 30px mono 數字 ＋ 11px 說明 */
 const PosKpi = ({ label, value, sub, color }) => (
-  <div style={{ ...posCard, padding: 14 }}>
-    <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700 }}>
-      {label}
-    </div>
+  <div
+    style={{
+      background: "var(--s1)",
+      border: "1px solid var(--s3)",
+      borderRadius: 14,
+      padding: "22px 24px",
+    }}
+  >
+    <Lbl>{label}</Lbl>
     <div
       style={{
-        fontFamily: mono,
-        fontSize: 20,
+        fontSize: 30,
         fontWeight: 700,
+        fontFamily: mono,
+        letterSpacing: "-0.03em",
         color: color || "var(--t1)",
         marginTop: 6,
-        letterSpacing: "-0.5px",
       }}
     >
       {value}
     </div>
     {sub && (
-      <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 4 }}>{sub}</div>
+      <div style={{ fontSize: 11, color: "var(--t4)", marginTop: 8 }}>{sub}</div>
     )}
   </div>
 );
+/* 門市沒有獨立淨利目標：用全公司底線 15% 當對照線（拍板框架：綜合淨利率 16/15） */
+const POS_NET_FLOOR = 0.15;
 function POSDashboard({
   data,
   included,
@@ -936,9 +944,13 @@ function POSDashboard({
   costsEff,
   recipes,
   components,
+  monthly,
+  sY,
+  sM,
 }) {
   const s = data.summary;
   const pct = (v) => `${(v * 100).toFixed(1)}%`;
+  const gapVal = s.netMargin - POS_NET_FLOOR;
   const [q, setQ] = useState("");
   const dq = useDebounced(q);
   const [showAll, setShowAll] = useState(false);
@@ -1053,66 +1065,232 @@ function POSDashboard({
         </div>
       )}
 
-      {/* 快照鎖定列：與官網／蝦皮同一套機制 */}
-      <div
-        className="f0"
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 14px",
-          background: isLocked ? "var(--wn-dim)" : "var(--s1)",
-          border: `1px solid ${isLocked ? "var(--wn-bdr)" : "var(--s3)"}`,
-          borderRadius: 12,
-          fontSize: 11,
-          color: "var(--t2)",
-        }}
-      >
-        <Lock size={12} color={isLocked ? "var(--wn)" : "var(--t4)"} />
-        <span style={{ fontWeight: 700 }}>
-          {isLocked ? "本期已鎖定成本快照" : "本期尚未鎖定快照"}
-        </span>
-        <span style={{ color: "var(--t4)" }}>
-          {isLocked
-            ? snapParams && !snapParams.mixed
-              ? `鎖定參數：營業費 ${snapParams.list[0].opExpense}%・稅 ${snapParams.list[0].tax}%`
-              : "各月參數不同（見側欄）"
-            : `目前即時參數：營業費 ${opExpense}%・稅 ${taxRate}%（只課有開發票的單）——月底改原料價前先鎖定，本期數字才不會跟著變`}
-        </span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          {missN > 0 && (
-            <Btn onClick={onJumpMiss} style={{ fontSize: 10 }}>
-              <AlertTriangle size={11} color="var(--wn)" /> {missN} 項未填成本
-            </Btn>
-          )}
+      {/* ══ HERO：與官網／蝦皮同版型（狀態列 → 大字淨利＋淨利率 → Waterfall） ══ */}
+      <div className="f1" style={{ ...posCard, padding: "32px 36px" }}>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            alignItems: "center",
+            marginBottom: 16,
+          }}
+        >
+          <Tag v={s.coveredRev > 0 ? (gapVal >= 0 ? "ok" : "bad") : "default"}>
+            <Zap size={10} />{" "}
+            {s.coveredRev > 0 ? (gapVal >= 0 ? "穩健" : "警告") : "無資料"}
+          </Tag>
           <Btn
-            v={isLocked ? "default" : "primary"}
+            v={isLocked ? "danger" : "default"}
             onClick={onToggleSnap}
             disabled={!canLock}
             title={canLock ? "" : "請先切到單一月份（各月營業費 % 不同）"}
-            style={{ fontSize: 10 }}
           >
-            {isLocked ? <Unlock size={11} /> : <Lock size={11} />}
-            {isLocked ? "解除快照" : "鎖定快照"}
+            <Lock size={11} /> {isLocked ? "解除快照" : "鎖定快照"}
           </Btn>
+          {isLocked && snapParams ? (
+            <Tag v="default">
+              <Lock size={10} />{" "}
+              {snapParams.mixed
+                ? "快照參數各月不同（見側欄）"
+                : `快照 營業費 ${snapParams.list[0].opExpense}%・稅 ${snapParams.list[0].tax}%`}
+            </Tag>
+          ) : (
+            <Tag v="default">
+              即時 營業費 {opExpense}%・稅 {taxRate}%（只課開票單）
+            </Tag>
+          )}
+          <Tag v="default">計入 {scopeLabel || "—"}</Tag>
+          {missN > 0 && (
+            <Tag v="warn" style={{ cursor: "pointer" }} onClick={onJumpMiss}>
+              <AlertCircle size={10} /> 未填成本 {missN} 項
+            </Tag>
+          )}
+          {s.noCostCount > 0 && (
+            <Tag v="warn">
+              {s.noCostCount} 筆算不出成本 · {fmt$(s.noCostRev)} 未計毛利
+            </Tag>
+          )}
+          {s.lossCount > 0 && (
+            <Tag v="bad">虧損 {s.lossCount} 筆</Tag>
+          )}
+          {s.coveredRev > 0 && (
+            <span
+              style={{
+                fontSize: 12,
+                color: gapVal >= 0 ? "var(--t3)" : "var(--wn)",
+                marginLeft: 8,
+              }}
+            >
+              {gapVal >= 0
+                ? `✓ 淨利率 ${pct(s.netMargin)}，高於全公司底線 ${(gapVal * 100).toFixed(1)}%`
+                : `⚠ 淨利率 ${pct(s.netMargin)}，距全公司底線差 ${Math.abs(gapVal * 100).toFixed(1)}%`}
+            </span>
+          )}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 24,
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--t3)",
+                marginBottom: 4,
+                letterSpacing: "0.06em",
+              }}
+            >
+              最終結算淨利 · NET PROFIT
+            </div>
+            <div
+              className="hero-num"
+              style={{
+                lineHeight: 1,
+                fontWeight: 700,
+                letterSpacing: "-0.04em",
+                fontFamily: mono,
+                color: s.coveredNet >= 0 ? "var(--t1)" : "var(--dn)",
+              }}
+            >
+              {fmt$(s.coveredNet)}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--t3)", marginTop: 8 }}>
+              營收：{fmt$(s.rev)}（{scopeLabel || "—"}） ｜ {s.valid} 筆 ｜ 客單{" "}
+              {fmt$(s.aov)}
+              {s.cancelledTotal > 0 ? ` ｜ 取消：${fmt$(s.cancelledTotal)}` : ""}
+            </div>
+            <PeriodCompare monthly={monthly} sY={sY} sM={sM} />
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t3)" }}>
+              淨利率
+            </div>
+            <div
+              className="hero-pct"
+              style={{
+                fontWeight: 700,
+                fontFamily: mono,
+                lineHeight: 1,
+                color: s.coveredRev > 0 ? netColor : "var(--t4)",
+              }}
+            >
+              {s.coveredRev > 0 ? pct(s.netMargin) : "—"}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 4 }}>
+              全公司底線 {(POS_NET_FLOOR * 100).toFixed(0)}%　差距{" "}
+              <span
+                style={{ color: gapVal >= 0 ? "var(--up)" : "var(--dn)" }}
+              >
+                {s.coveredRev > 0
+                  ? `${gapVal >= 0 ? "+" : ""}${(gapVal * 100).toFixed(1)}%`
+                  : "—"}
+              </span>
+            </div>
+          </div>
+        </div>
+        {/* Waterfall：毛利（成本齊全單）− 營業費 − 稅賦（只課開票單）= 淨利，逐項可驗算 */}
+        <div
+          style={{
+            marginTop: 28,
+            borderTop: "1px solid var(--s3)",
+            paddingTop: 20,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: "var(--t3)",
+              marginBottom: 14,
+              letterSpacing: "0.06em",
+            }}
+          >
+            損益分解 · WATERFALL
+            {s.noCostCount > 0 && (
+              <span style={{ fontWeight: 500, color: "var(--t4)", marginLeft: 8 }}>
+                （只含成本齊全的 {s.valid - s.noCostCount} 筆）
+              </span>
+            )}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "flex-end",
+              gap: 0,
+            }}
+          >
+            {[
+              { l: "毛利（無平台抽成）", v: s.coveredGp, c: "var(--t1)" },
+              { l: "營業費", v: -s.coveredOp, c: "var(--dn)" },
+              { l: "稅賦（開票單）", v: -s.coveredTax, c: "var(--dn)" },
+              { l: "淨利", v: s.coveredNet, c: accentColor, bold: true },
+            ].map((item, i, arr) => (
+              <React.Fragment key={i}>
+                <div
+                  style={{
+                    flex: "1 1 0",
+                    minWidth: 90,
+                    textAlign: "center",
+                    padding: "0 8px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--t3)",
+                      fontWeight: 600,
+                      marginBottom: 4,
+                    }}
+                  >
+                    {item.l}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 20,
+                      fontWeight: item.bold ? 800 : 600,
+                      fontFamily: mono,
+                      color: item.c,
+                      letterSpacing: "-0.02em",
+                    }}
+                  >
+                    {fmt$(item.v)}
+                  </div>
+                </div>
+                {i < arr.length - 1 && (
+                  <div
+                    style={{
+                      color: "var(--s4)",
+                      fontSize: 18,
+                      padding: "0 2px",
+                      alignSelf: "center",
+                    }}
+                  >
+                    ›
+                  </div>
+                )}
+              </React.Fragment>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* KPI：三張卡，％為主、金額為輔（老闆 2026-08-18：主要看毛利率／淨利率）
-          成本覆蓋率降為毛利率卡的副標（<90% 才變色提醒），開票比例併進淨利率卡副標 */}
-      <div
-        className="f0"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))",
-          gap: 12,
-        }}
-      >
+      {/* KPI 三卡：％為主、金額為輔（老闆 2026-08-18：主要看毛利率／淨利率）
+          成本覆蓋率降為毛利率卡的副標（<100% 才顯示、變色提醒），開票比例併進淨利率卡副標 */}
+      <div className="g3 f2">
         <PosKpi
           label={`門市營收（${scopeLabel || "無通路"}）`}
           value={fmt$(s.rev)}
-          sub={`${s.valid} 筆 ｜ 客單 ${fmt$(s.aov)}`}
+          sub={`${s.valid} 筆 ｜ 客單 ${fmt$(s.aov)}${
+            s.cancelledTotal > 0 ? ` ｜ 取消 ${fmt$(s.cancelledTotal)}` : ""
+          }`}
         />
         <PosKpi
           label="毛利率（無平台抽成）"
@@ -1120,17 +1298,21 @@ function POSDashboard({
           sub={
             <>
               毛利 {fmt$(s.coveredGp)}
-              {s.rev > 0 && s.costCoverage < 0.999 && (
+              {s.rev > 0 && s.costCoverage < 0.999 ? (
                 <>
                   {" ｜ 成本覆蓋 "}
                   <b style={{ color: covColor }}>{pct(s.costCoverage)}</b>
                   {`（${s.noCostCount} 筆算不出成本）`}
                 </>
-              )}
+              ) : s.rev > 0 ? (
+                " ｜ ✓ 成本全覆蓋"
+              ) : null}
             </>
           }
           color={
-            s.grossMargin >= 0.5
+            s.coveredRev <= 0
+              ? "var(--t4)"
+              : s.grossMargin >= 0.5
               ? "var(--up)"
               : s.grossMargin >= 0.4
               ? "var(--wn)"
@@ -1143,10 +1325,9 @@ function POSDashboard({
           sub={`淨利 ${fmt$(s.coveredNet)} ｜ 營業費 ${opExpense}%・稅 ${taxRate}%（開票 ${
             s.rev > 0 ? pct(s.invoiceRate) : "—"
           } 才課）`}
-          color={netColor}
+          color={s.coveredRev > 0 ? netColor : "var(--t4)"}
         />
       </div>
-
       {/* 通路分組 */}
       <div className="f0" style={posCard}>
         <div
@@ -5090,6 +5271,9 @@ function ProfitCenter() {
       coveredRev: 0,
       coveredGp: 0,
       coveredNet: 0,
+      coveredOp: 0,
+      coveredTax: 0,
+      lossCount: 0,
     };
     const byChannel = {};
     POS_CHANNELS.forEach((c) => {
@@ -5190,6 +5374,9 @@ function ProfitCenter() {
         t.coveredRev += fin.gross;
         t.coveredGp += fin.gp;
         t.coveredNet += fin.finalNet;
+        t.coveredOp += fin.opAmt;
+        t.coveredTax += fin.txAmt;
+        if (fin.finalNet < 0) t.lossCount++;
       }
       if (order.hasInvoice) t.invoiceRev += fin.gross;
       ol.push({
@@ -5223,6 +5410,22 @@ function ProfitCenter() {
       },
     };
   }, [posOrders, posEffCosts, slFp, inPeriod, posIncluded]);
+
+  /* 門市每月營收／淨利（環比同比用；同 KPI 口徑：計入的通路、淨利只算成本齊全的單） */
+  const posMonthly = useMemo(() => {
+    const map = {};
+    Object.values(posOrders).forEach((o) => {
+      const ym = String(o.date || "").substring(0, 7);
+      if (ym.length < 7) return;
+      if (!posIncluded.includes(o.channel)) return;
+      const fin = posOrderFin(o, slFp, posEffCosts);
+      if (fin.isCanc || fin.isTest) return;
+      if (!map[ym]) map[ym] = { rev: 0, net: 0 };
+      map[ym].rev += fin.gross;
+      if (!fin.missCost) map[ym].net += fin.finalNet;
+    });
+    return map;
+  }, [posOrders, posIncluded, slFp, posEffCosts]);
 
   const slData = useMemo(() => {
     const all = Object.values(slOrders);
@@ -8083,6 +8286,9 @@ function ProfitCenter() {
                   costsEff={posEffCosts}
                   recipes={posRecipes}
                   components={components}
+                  monthly={posMonthly}
+                  sY={sY}
+                  sM={effM}
                 />
                 {costMatrixCard}
               </>
