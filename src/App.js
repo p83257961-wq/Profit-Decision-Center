@@ -23,6 +23,7 @@ import {
   PieChart,
   RotateCcw,
   Lock,
+  Unlock,
   Loader2,
   Gift,
   Zap,
@@ -926,9 +927,23 @@ function POSDashboard({
   accentBdr,
   opExpense,
   taxRate,
+  isLocked,
+  snapParams,
+  onToggleSnap,
+  canLock,
+  missN,
+  onJumpMiss,
+  costsEff,
+  recipes,
+  components,
 }) {
   const s = data.summary;
   const pct = (v) => `${(v * 100).toFixed(1)}%`;
+  const [q, setQ] = useState("");
+  const dq = useDebounced(q);
+  const [showAll, setShowAll] = useState(false);
+  const [openId, setOpenId] = useState(null);
+  const PAGE = 60;
   const netColor =
     s.netMargin >= 0.15
       ? "var(--up)"
@@ -959,8 +974,125 @@ function POSDashboard({
     color: "var(--t2)",
     whiteSpace: "nowrap",
   };
+  const tdL = { ...td, textAlign: "left", fontFamily: "inherit" };
+  /* 通路合計（只算勾選中的通路，與 KPI 同口徑） */
+  const chTotal = data.channels
+    .filter((c) => !c.excluded)
+    .reduce(
+      (a, c) => ({
+        rev: a.rev + c.rev,
+        orders: a.orders + c.orders,
+        coveredRev: a.coveredRev + c.coveredRev,
+        coveredGp: a.coveredGp + c.coveredGp,
+        coveredNet: a.coveredNet + c.coveredNet,
+        invoiceRev: a.invoiceRev + c.invoiceRev,
+      }),
+      {
+        rev: 0,
+        orders: 0,
+        coveredRev: 0,
+        coveredGp: 0,
+        coveredNet: 0,
+        invoiceRev: 0,
+      }
+    );
+  const orders = data.orderList.filter((o) => {
+    if (!dq) return true;
+    const t = dq.toLowerCase();
+    return (
+      String(o.orderId).toLowerCase().includes(t) ||
+      String(o.remark || "").toLowerCase().includes(t) ||
+      String(o.channelLabel || "").toLowerCase().includes(t) ||
+      String(o.payMethod || "").toLowerCase().includes(t) ||
+      (o.items || []).some((i) =>
+        `${i.name} ${i.option || ""}`.toLowerCase().includes(t)
+      )
+    );
+  });
+  const shown = showAll ? orders : orders.slice(0, PAGE);
+  const recipeOf = (key) => {
+    const lines = recipes?.[key];
+    if (!lines || !lines.length) return null;
+    return lines
+      .map(
+        (l) => `${components?.[l.compId]?.name || "（組件已刪）"}×${l.qty}`
+      )
+      .join("＋");
+  };
+  const cell = (extra) => ({ ...td, padding: "4px 8px", ...extra });
+  const cellL = (extra) => ({ ...tdL, padding: "4px 8px", ...extra });
+  const subTh = (extra) => ({ ...th, padding: "4px 8px", ...extra });
   return (
     <>
+      {/* 本期零筆：分辨「沒匯報表」與「真的沒生意」，避免一排 0 被誤讀 */}
+      {s.valid === 0 && (
+        <div
+          className="f0"
+          style={{
+            background: "var(--wn-dim)",
+            border: "1px solid var(--wn-bdr)",
+            borderRadius: 12,
+            padding: "10px 14px",
+            fontSize: 12,
+            color: "var(--t2)",
+            lineHeight: 1.6,
+          }}
+        >
+          <b style={{ color: "var(--wn)" }}>本期沒有門市訂單。</b>{" "}
+          {s.rawTotal > 0
+            ? "本期只有取消／測試單。"
+            : excluded.length
+            ? "所有通路都被取消勾選了——到下方通路拆解重新勾選。"
+            : "可能還沒匯入這個月份的兩份報表，或期間選錯了。"}
+        </div>
+      )}
+
+      {/* 快照鎖定列：與官網／蝦皮同一套機制 */}
+      <div
+        className="f0"
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: 10,
+          padding: "10px 14px",
+          background: isLocked ? "var(--wn-dim)" : "var(--s1)",
+          border: `1px solid ${isLocked ? "var(--wn-bdr)" : "var(--s3)"}`,
+          borderRadius: 12,
+          fontSize: 11,
+          color: "var(--t2)",
+        }}
+      >
+        <Lock size={12} color={isLocked ? "var(--wn)" : "var(--t4)"} />
+        <span style={{ fontWeight: 700 }}>
+          {isLocked ? "本期已鎖定成本快照" : "本期尚未鎖定快照"}
+        </span>
+        <span style={{ color: "var(--t4)" }}>
+          {isLocked
+            ? snapParams && !snapParams.mixed
+              ? `鎖定參數：營業費 ${snapParams.list[0].opExpense}%・稅 ${snapParams.list[0].tax}%`
+              : "各月參數不同（見側欄）"
+            : `目前即時參數：營業費 ${opExpense}%・稅 ${taxRate}%（只課有開發票的單）——月底改原料價前先鎖定，本期數字才不會跟著變`}
+        </span>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          {missN > 0 && (
+            <Btn onClick={onJumpMiss} style={{ fontSize: 10 }}>
+              <AlertTriangle size={11} color="var(--wn)" /> {missN} 項未填成本
+            </Btn>
+          )}
+          <Btn
+            v={isLocked ? "default" : "primary"}
+            onClick={onToggleSnap}
+            disabled={!canLock}
+            title={canLock ? "" : "請先切到單一月份（各月營業費 % 不同）"}
+            style={{ fontSize: 10 }}
+          >
+            {isLocked ? <Unlock size={11} /> : <Lock size={11} />}
+            {isLocked ? "解除快照" : "鎖定快照"}
+          </Btn>
+        </div>
+      </div>
+
       {/* KPI */}
       <div
         className="f0"
@@ -991,17 +1123,19 @@ function POSDashboard({
         />
         <PosKpi
           label="成本覆蓋率"
-          value={pct(s.costCoverage)}
+          value={s.rev > 0 ? pct(s.costCoverage) : "—"}
           sub={
-            s.noCostCount
-              ? `${s.noCostCount} 筆無成本（品項未選正規）`
+            s.valid === 0
+              ? "本期無訂單"
+              : s.noCostCount
+              ? `${s.noCostCount} 筆無成本（品項未選正規／缺明細）`
               : "全部訂單都算得出成本"
           }
-          color={covColor}
+          color={s.rev > 0 ? covColor : "var(--t4)"}
         />
         <PosKpi
           label="開票比例"
-          value={pct(s.invoiceRate)}
+          value={s.rev > 0 ? pct(s.invoiceRate) : "—"}
           sub={`課稅 ${taxRate}%｜未開票不課`}
         />
       </div>
@@ -1029,7 +1163,7 @@ function POSDashboard({
             }}
           >
             <span style={{ fontSize: 10, color: "var(--t4)" }}>
-              取消勾選＝不計入上方 KPI
+              取消勾選＝不計入上方 KPI 與商品表
             </span>
             {excluded.length > 0 && (
               <Btn onClick={() => onSetExcluded([])} style={{ fontSize: 10 }}>
@@ -1054,7 +1188,7 @@ function POSDashboard({
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
-            style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}
+            style={{ width: "100%", borderCollapse: "collapse", minWidth: 680 }}
           >
             <thead>
               <tr>
@@ -1066,6 +1200,7 @@ function POSDashboard({
                 <th style={th}>客單</th>
                 <th style={th}>毛利率</th>
                 <th style={th}>淨利率</th>
+                <th style={th}>成本覆蓋</th>
                 <th style={th}>開票</th>
               </tr>
             </thead>
@@ -1073,6 +1208,7 @@ function POSDashboard({
               {data.channels.map((c) => {
                 const gm = c.coveredRev > 0 ? c.coveredGp / c.coveredRev : 0;
                 const nm = c.coveredRev > 0 ? c.coveredNet / c.coveredRev : 0;
+                const cov = c.rev > 0 ? (c.rev - c.noCostRev) / c.rev : 0;
                 const isDealer = c.key === "dealer";
                 return (
                   <tr
@@ -1097,15 +1233,7 @@ function POSDashboard({
                         style={{ accentColor, cursor: "pointer" }}
                       />
                     </td>
-                    <td
-                      style={{
-                        ...td,
-                        textAlign: "left",
-                        fontFamily: "inherit",
-                        fontWeight: 700,
-                        color: "var(--t1)",
-                      }}
-                    >
+                    <td style={{ ...tdL, fontWeight: 700, color: "var(--t1)" }}>
                       {c.label}
                       {isDealer && (
                         <span
@@ -1124,7 +1252,9 @@ function POSDashboard({
                     </td>
                     <td style={td}>{fmt$(c.rev)}</td>
                     <td style={td}>
-                      {s.rev > 0 ? pct(c.rev / s.rev) : "—"}
+                      {chTotal.rev > 0 && !c.excluded
+                        ? pct(c.rev / chTotal.rev)
+                        : "—"}
                     </td>
                     <td style={td}>{c.orders}</td>
                     <td style={td}>
@@ -1133,7 +1263,12 @@ function POSDashboard({
                     <td
                       style={{
                         ...td,
-                        color: gm >= 0.45 ? "var(--up)" : gm >= 0.35 ? "var(--wn)" : "var(--dn)",
+                        color:
+                          gm >= 0.45
+                            ? "var(--up)"
+                            : gm >= 0.35
+                            ? "var(--wn)"
+                            : "var(--dn)",
                         fontWeight: 700,
                       }}
                     >
@@ -1142,11 +1277,24 @@ function POSDashboard({
                     <td
                       style={{
                         ...td,
-                        color: nm >= 0.1 ? "var(--up)" : nm >= 0 ? "var(--wn)" : "var(--dn)",
+                        color:
+                          nm >= 0.1
+                            ? "var(--up)"
+                            : nm >= 0
+                            ? "var(--wn)"
+                            : "var(--dn)",
                         fontWeight: 700,
                       }}
                     >
                       {c.coveredRev > 0 ? pct(nm) : "—"}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        color: cov >= 0.9 ? "var(--t2)" : "var(--wn)",
+                      }}
+                    >
+                      {c.rev > 0 ? pct(cov) : "—"}
                     </td>
                     <td style={td}>
                       {c.rev > 0 ? pct(c.invoiceRev / c.rev) : "—"}
@@ -1154,6 +1302,44 @@ function POSDashboard({
                   </tr>
                 );
               })}
+              {data.channels.length > 1 && (
+                <tr>
+                  <td style={td}></td>
+                  <td style={{ ...tdL, fontWeight: 700, color: "var(--t3)" }}>
+                    合計（勾選中）
+                  </td>
+                  <td style={{ ...td, fontWeight: 700 }}>
+                    {fmt$(chTotal.rev)}
+                  </td>
+                  <td style={td}>100%</td>
+                  <td style={td}>{chTotal.orders}</td>
+                  <td style={td}>
+                    {chTotal.orders > 0
+                      ? fmt$(chTotal.rev / chTotal.orders)
+                      : "—"}
+                  </td>
+                  <td style={{ ...td, fontWeight: 700 }}>
+                    {chTotal.coveredRev > 0
+                      ? pct(chTotal.coveredGp / chTotal.coveredRev)
+                      : "—"}
+                  </td>
+                  <td style={{ ...td, fontWeight: 700 }}>
+                    {chTotal.coveredRev > 0
+                      ? pct(chTotal.coveredNet / chTotal.coveredRev)
+                      : "—"}
+                  </td>
+                  <td style={td}>
+                    {chTotal.rev > 0
+                      ? pct(chTotal.coveredRev / chTotal.rev)
+                      : "—"}
+                  </td>
+                  <td style={td}>
+                    {chTotal.rev > 0
+                      ? pct(chTotal.invoiceRev / chTotal.rev)
+                      : "—"}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -1168,13 +1354,14 @@ function POSDashboard({
           >
             {s.noCostRev > 0 && (
               <div>
-                ※ {fmt$(s.noCostRev)} 營收的商品未選正規品項（如「茶葉」泛稱），
-                已計入營收但排除在毛利計算外
+                ※ {fmt$(s.noCostRev)}{" "}
+                營收的訂單算不出成本（品項未選正規如「茶葉」泛稱、或缺商品明細），已計入營收但排除在毛利計算外
               </div>
             )}
             {s.testCount > 0 && (
               <div>
-                ※ 已排除 {s.testCount} 筆測試單（≤{POS_TEST_MAX} 元，共 {fmt$(s.testTotal)}）
+                ※ 已排除 {s.testCount} 筆測試單（≤{POS_TEST_MAX} 元，共{" "}
+                {fmt$(s.testTotal)}）
               </div>
             )}
             {s.cancelledTotal > 0 && (
@@ -1184,119 +1371,69 @@ function POSDashboard({
         )}
       </div>
 
-      {/* 商品毛利 */}
-      <div className="f0" style={posCard}>
-        <div
-          style={{
-            fontSize: 13,
-            fontWeight: 700,
-            color: "var(--t1)",
-            marginBottom: 12,
-          }}
-        >
-          商品毛利（本期 {data.matrixList.length} 項）
-        </div>
-        <div style={{ overflowX: "auto", maxHeight: 380, overflowY: "auto" }}>
-          <table
-            style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}
-          >
-            <thead>
-              <tr>
-                <th style={{ ...th, textAlign: "left" }}>商品</th>
-                <th style={{ ...th, textAlign: "left" }}>規格</th>
-                <th style={th}>數量</th>
-                <th style={th}>營收</th>
-                <th style={th}>毛利</th>
-                <th style={th}>毛利率</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.matrixList.slice(0, 60).map((p) => {
-                const gm =
-                  p.totalRevenue > 0
-                    ? p.profitContribution / p.totalRevenue
-                    : null;
-                const noCost = p.totalCost === 0 && p.totalRevenue > 0;
-                return (
-                  <tr key={p.key}>
-                    <td
-                      style={{
-                        ...td,
-                        textAlign: "left",
-                        fontFamily: "inherit",
-                        color: "var(--t1)",
-                        maxWidth: 260,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {p.name}
-                    </td>
-                    <td
-                      style={{
-                        ...td,
-                        textAlign: "left",
-                        fontFamily: "inherit",
-                        fontSize: 11,
-                        color: "var(--t3)",
-                      }}
-                    >
-                      {p.option}
-                    </td>
-                    <td style={td}>{p.soldQty}</td>
-                    <td style={td}>{fmt$(p.totalRevenue)}</td>
-                    <td style={td}>
-                      {noCost ? (
-                        <span style={{ color: "var(--wn)", fontSize: 10 }}>
-                          無成本
-                        </span>
-                      ) : (
-                        fmt$(p.profitContribution)
-                      )}
-                    </td>
-                    <td
-                      style={{
-                        ...td,
-                        fontWeight: 700,
-                        color: noCost
-                          ? "var(--t4)"
-                          : gm >= 0.45
-                          ? "var(--up)"
-                          : gm >= 0.3
-                          ? "var(--wn)"
-                          : "var(--dn)",
-                      }}
-                    >
-                      {noCost || gm === null ? "—" : pct(gm)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
       {/* 訂單 */}
       <div className="f0" style={posCard}>
         <div
           style={{
-            fontSize: 13,
-            fontWeight: 700,
-            color: "var(--t1)",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 10,
             marginBottom: 12,
           }}
         >
-          訂單明細（{data.orderList.length} 筆）
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--t1)" }}>
+            訂單明細（{orders.length}
+            {dq && orders.length !== data.orderList.length
+              ? ` / ${data.orderList.length}`
+              : ""}{" "}
+            筆）
+          </div>
+          <div
+            style={{ position: "relative", flex: "1 1 220px", maxWidth: 340 }}
+          >
+            <Search
+              size={13}
+              color="var(--t4)"
+              style={{
+                position: "absolute",
+                left: 10,
+                top: "50%",
+                transform: "translateY(-50%)",
+              }}
+            />
+            <input
+              type="text"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="搜尋單號／備註／通路／付款方式／商品…"
+              aria-label="搜尋門市訂單"
+              style={{
+                width: "100%",
+                padding: "7px 10px 7px 30px",
+                borderRadius: 8,
+                border: "1px solid var(--s3)",
+                background: "var(--s2)",
+                color: "var(--t1)",
+                fontSize: 12,
+              }}
+            />
+          </div>
+          <span
+            style={{ fontSize: 10, color: "var(--t4)", marginLeft: "auto" }}
+          >
+            點一列展開商品與成本明細
+          </span>
         </div>
-        <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+        <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto" }}>
           <table
-            style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}
+            style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}
           >
             <thead>
               <tr>
                 <th style={{ ...th, textAlign: "left" }}>日期</th>
                 <th style={{ ...th, textAlign: "left" }}>通路</th>
+                <th style={{ ...th, textAlign: "left" }}>付款方式</th>
                 <th style={{ ...th, textAlign: "left" }}>備註</th>
                 <th style={th}>營收</th>
                 <th style={th}>成本</th>
@@ -1306,111 +1443,244 @@ function POSDashboard({
               </tr>
             </thead>
             <tbody>
-              {data.orderList.slice(0, 100).map((o) => {
+              {shown.map((o) => {
                 const gm = o.revenue > 0 ? o.gp / o.revenue : 0;
                 /* 毛利率高得不合理＝多半是開單沒選規格（總價打在數量 1 上） */
                 const suspect = !o.missCost && gm > 0.85;
+                const isOpen = openId === o.orderId;
                 return (
-                  <tr
-                    key={o.orderId}
-                    style={{
-                      background: o.net < 0 ? "var(--row-loss)" : "transparent",
-                    }}
-                  >
-                    <td
+                  <React.Fragment key={o.orderId}>
+                    <tr
+                      onClick={() => setOpenId(isOpen ? null : o.orderId)}
                       style={{
-                        ...td,
-                        textAlign: "left",
-                        fontSize: 11,
+                        cursor: "pointer",
+                        background: isOpen
+                          ? "var(--s2)"
+                          : o.net < 0 && !o.missCost
+                          ? "var(--row-loss)"
+                          : "transparent",
                       }}
                     >
-                      {String(o.date).slice(5)}
-                    </td>
-                    <td
-                      style={{
-                        ...td,
-                        textAlign: "left",
-                        fontFamily: "inherit",
-                        fontSize: 11,
-                        color:
-                          o.channel === "dealer" ? accentColor : "var(--t2)",
-                        fontWeight: o.channel === "dealer" ? 700 : 400,
-                      }}
-                    >
-                      {o.channelLabel}
-                    </td>
-                    <td
-                      style={{
-                        ...td,
-                        textAlign: "left",
-                        fontFamily: "inherit",
-                        fontSize: 11,
-                        color: "var(--t3)",
-                        maxWidth: 120,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {o.remark || "—"}
-                    </td>
-                    <td style={td}>{fmt$(o.revenue)}</td>
-                    <td style={td}>
-                      {o.missCost ? (
-                        <span style={{ color: "var(--wn)", fontSize: 10 }}>
-                          缺
-                        </span>
-                      ) : (
-                        fmt$(o.oCost)
-                      )}
-                    </td>
-                    <td
-                      style={{
-                        ...td,
-                        fontWeight: 700,
-                        color: o.missCost
-                          ? "var(--t4)"
-                          : suspect
-                          ? "var(--wn)"
-                          : gm >= 0.45
-                          ? "var(--up)"
-                          : gm >= 0.3
-                          ? "var(--wn)"
-                          : "var(--dn)",
-                      }}
-                      title={
-                        suspect
-                          ? "毛利率異常高：可能是開單沒選克數規格（總價打在數量 1 上）"
-                          : undefined
-                      }
-                    >
-                      {o.missCost ? "—" : pct(gm)}
-                      {suspect && (
-                        <span style={{ color: "var(--wn)", marginLeft: 3 }}>
-                          ⚠
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      style={{
-                        ...td,
-                        color: o.net >= 0 ? "var(--t2)" : "var(--dn)",
-                      }}
-                    >
-                      {o.missCost ? "—" : fmt$(o.net)}
-                    </td>
-                    <td style={{ ...td, fontSize: 10 }}>
-                      {o.hasInvoice ? (
-                        <span style={{ color: "var(--up)" }}>已開</span>
-                      ) : (
-                        <span style={{ color: "var(--t4)" }}>—</span>
-                      )}
-                    </td>
-                  </tr>
+                      <td style={{ ...td, textAlign: "left", fontSize: 11 }}>
+                        {String(o.date).slice(5)}
+                      </td>
+                      <td
+                        style={{
+                          ...tdL,
+                          fontSize: 11,
+                          color:
+                            o.channel === "dealer" ? accentColor : "var(--t2)",
+                          fontWeight: o.channel === "dealer" ? 700 : 400,
+                        }}
+                      >
+                        {o.channelLabel}
+                      </td>
+                      <td style={{ ...tdL, fontSize: 11, color: "var(--t3)" }}>
+                        {o.payMethod || "—"}
+                      </td>
+                      <td
+                        style={{
+                          ...tdL,
+                          fontSize: 11,
+                          color: "var(--t3)",
+                          maxWidth: 120,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {o.remark || "—"}
+                      </td>
+                      <td style={td}>{fmt$(o.revenue)}</td>
+                      <td style={td}>
+                        {o.missCost ? (
+                          <span style={{ color: "var(--wn)", fontSize: 10 }}>
+                            {(o.items || []).length ? "缺" : "無明細"}
+                          </span>
+                        ) : (
+                          fmt$(o.oCost)
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          ...td,
+                          fontWeight: 700,
+                          color: o.missCost
+                            ? "var(--t4)"
+                            : suspect
+                            ? "var(--wn)"
+                            : gm >= 0.45
+                            ? "var(--up)"
+                            : gm >= 0.3
+                            ? "var(--wn)"
+                            : "var(--dn)",
+                        }}
+                        title={
+                          suspect
+                            ? "毛利率異常高：可能是開單沒選克數規格（總價打在數量 1 上）"
+                            : undefined
+                        }
+                      >
+                        {o.missCost ? "—" : pct(gm)}
+                        {suspect && (
+                          <span style={{ color: "var(--wn)", marginLeft: 3 }}>
+                            ⚠
+                          </span>
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          ...td,
+                          color: o.net >= 0 ? "var(--t2)" : "var(--dn)",
+                        }}
+                      >
+                        {o.missCost ? "—" : fmt$(o.net)}
+                      </td>
+                      <td style={{ ...td, fontSize: 10 }}>
+                        {o.hasInvoice ? (
+                          <span style={{ color: "var(--up)" }}>已開</span>
+                        ) : (
+                          <span style={{ color: "var(--t4)" }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr>
+                        <td
+                          colSpan={9}
+                          style={{
+                            padding: "6px 14px 12px 24px",
+                            background: "var(--s2)",
+                            borderBottom: "1px solid var(--s3)",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 10,
+                              color: "var(--t4)",
+                              marginBottom: 6,
+                              fontFamily: mono,
+                            }}
+                          >
+                            #{o.orderId}
+                            {o.staff ? `｜銷售人員 ${o.staff}` : ""}
+                            {o.taxId ? `｜統編 ${o.taxId}` : ""}
+                            {`｜營業費 ${fmt$(o.opx)}｜稅 ${fmt$(o.taxAmt)}`}
+                          </div>
+                          {(o.items || []).length ? (
+                            <table
+                              style={{
+                                width: "100%",
+                                borderCollapse: "collapse",
+                              }}
+                            >
+                              <thead>
+                                <tr>
+                                  <th style={subTh({ textAlign: "left" })}>
+                                    商品
+                                  </th>
+                                  <th style={subTh({ textAlign: "left" })}>
+                                    規格
+                                  </th>
+                                  <th style={subTh()}>數量</th>
+                                  <th style={subTh()}>結帳價</th>
+                                  <th style={subTh()}>單位成本</th>
+                                  <th style={subTh({ textAlign: "left" })}>
+                                    成本來源（配方）
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {o.items.map((it, i) => {
+                                  const has =
+                                    Object.prototype.hasOwnProperty.call(
+                                      it,
+                                      "snapshotCost"
+                                    ) && it.snapshotCost !== null;
+                                  const unit = has
+                                    ? Number(it.snapshotCost)
+                                    : Number(costsEff?.[it.key]) || 0;
+                                  const rc = recipeOf(it.key);
+                                  return (
+                                    <tr key={i}>
+                                      <td
+                                        style={cellL({
+                                          fontSize: 11,
+                                          color: "var(--t1)",
+                                        })}
+                                      >
+                                        {it.name}
+                                      </td>
+                                      <td
+                                        style={cellL({
+                                          fontSize: 11,
+                                          color: "var(--t3)",
+                                        })}
+                                      >
+                                        {it.option || "—"}
+                                      </td>
+                                      <td style={cell()}>{it.qty}</td>
+                                      <td style={cell()}>{fmt$(it.price)}</td>
+                                      <td
+                                        style={cell({
+                                          color:
+                                            unit > 0 ? "var(--t2)" : "var(--wn)",
+                                          fontWeight: unit > 0 ? 400 : 700,
+                                        })}
+                                      >
+                                        {unit > 0 ? fmt$d(unit) : "未填"}
+                                        {has ? (
+                                          <span
+                                            style={{
+                                              fontSize: 9,
+                                              color: "var(--wn)",
+                                              marginLeft: 3,
+                                            }}
+                                          >
+                                            鎖
+                                          </span>
+                                        ) : null}
+                                      </td>
+                                      <td
+                                        style={cellL({
+                                          fontSize: 10,
+                                          color: rc
+                                            ? "var(--accent-text)"
+                                            : "var(--t4)",
+                                        })}
+                                      >
+                                        {rc ||
+                                          (unit > 0
+                                            ? "手填成本"
+                                            : "—（到下方成本資料庫掛配方或填成本）")}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          ) : (
+                            <div style={{ fontSize: 11, color: "var(--wn)" }}>
+                              這張交易沒有對到商品明細——訂單明細報表的日期範圍要往前多抓一個月再匯一次，會自動補齊。
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
+        {orders.length > PAGE && (
+          <div style={{ marginTop: 10, textAlign: "center" }}>
+            <Btn onClick={() => setShowAll((v) => !v)} style={{ fontSize: 10 }}>
+              {showAll
+                ? `只顯示前 ${PAGE} 筆`
+                : `顯示全部 ${orders.length} 筆`}
+            </Btn>
+          </div>
+        )}
       </div>
     </>
   );
@@ -2954,7 +3224,8 @@ const posOrderFin = (order, fp, costsMap) => {
   const tx =
     ofp?.tax != null ? Number(ofp.tax) || 0 : parseFloat(fp.tax) || 0;
   let oCost = 0;
-  let missCost = false;
+  /* 沒有商品明細（交易有、明細沒對到）＝算不出成本，一律視為缺成本 */
+  let missCost = !(order.items || []).length;
   (order.items || []).forEach((item) => {
     const has =
       Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
@@ -4487,6 +4758,7 @@ function ProfitCenter() {
       else if (t.includes("付款方式")) idx.payMethod = i;
       else if (t.includes("訂單合計")) idx.total = i;
       else if (t.includes("交易備註")) idx.remark = i;
+      else if (t.includes("銷售人員")) idx.staff = i;
       else if (t.includes("統一編號")) idx.taxId = i;
       else if (t.includes("發票號碼")) idx.invoiceNo = i;
       else if (t.includes("商品名稱")) idx.prodName = i;
@@ -4540,6 +4812,7 @@ function ProfitCenter() {
           payMethod: "",
           date: "",
           remark: "",
+          staff: "",
           taxId: "",
           hasInvoice: false,
           refunded: false,
@@ -4553,6 +4826,8 @@ function ProfitCenter() {
       rec.payMethod = safeText(r[tIdx.payMethod]) || rec.payMethod;
       rec.date = normDate(safeText(r[tIdx.txDate])) || rec.date;
       rec.remark = safeText(r[tIdx.remark]) || rec.remark;
+      rec.staff =
+        (tIdx.staff !== undefined ? safeText(r[tIdx.staff]) : "") || rec.staff;
       rec.taxId = safeText(r[tIdx.taxId]) || rec.taxId;
       rec.status = safeText(r[tIdx.status]) || rec.status;
       rec.total = numOrZero(r[tIdx.total]) || rec.total;
@@ -4588,27 +4863,26 @@ function ProfitCenter() {
       });
     }
 
-    /* 3) join：以訂單號碼串起來 */
+    /* 3) join：以訂單號碼串起來。交易有、明細沒有（早開單晚付款、明細範圍沒抓到）
+       的訂單不丟——先以「無商品明細」入帳，營收照算、毛利排除；下次補匯明細會自動補齊 */
     const orphanTrans = [];
     const newOrders = {};
     Object.entries(head).forEach(([oid, h]) => {
       const b = built[oid];
-      if (!b) {
-        orphanTrans.push(oid);
-        return;
-      }
-      const st = `${b.status || h.status}${h.refunded ? " 已退款" : ""}`;
+      if (!b) orphanTrans.push(oid);
+      const st = `${b?.status || h.status}${h.refunded ? " 已退款" : ""}`;
       newOrders[oid] = {
         orderId: oid,
-        date: h.date || b.orderDate || "",
+        date: h.date || b?.orderDate || "",
         status: st,
         channel: posChannelOf(h.payMethod),
         payMethod: h.payMethod,
+        staff: h.staff,
         hasInvoice: h.hasInvoice,
         taxId: h.taxId,
         remark: h.remark,
-        revenue: b.revenue || h.total || 0,
-        items: b.items,
+        revenue: b?.revenue || h.total || 0,
+        items: b ? b.items : [],
       };
     });
 
@@ -4629,7 +4903,11 @@ function ProfitCenter() {
     setPosOrders((p) => {
       const merged = { ...p };
       Object.values(newOrders).forEach((o) => {
-        merged[o.orderId] = withOldSnapshot(merged[o.orderId], o);
+        const old = merged[o.orderId];
+        /* 這次只有交易頭、沒有明細，但先前已匯過完整明細 → 保留舊明細，別被空陣列蓋掉 */
+        const next =
+          !o.items.length && old?.items?.length ? { ...o, items: old.items } : o;
+        merged[o.orderId] = withOldSnapshot(old, next);
       });
       return merged;
     });
@@ -4650,7 +4928,7 @@ function ProfitCenter() {
       msg += `，自動對應 ${Object.keys(autoR).length} 項成本`;
     if (unmatched.length) msg += `；${unmatched.length} 項無成本資料`;
     if (orphanTrans.length)
-      msg += `；${orphanTrans.length} 張交易在訂單明細中找不到（訂單明細日期範圍請往前多抓一個月）`;
+      msg += `；${orphanTrans.length} 張交易沒有對到商品明細（已先以營收入帳、不算毛利；訂單明細日期範圍往前多抓一個月再匯一次即可補齊）`;
     toast(msg, {
       type: unmatched.length || orphanTrans.length ? "warning" : "success",
       duration: 9000,
@@ -4699,13 +4977,24 @@ function ProfitCenter() {
     rd.onerror = () => toast("檔案讀取失敗，請重試", { type: "error" });
     if (isX) {
       if (typeof window.XLSX === "undefined") {
-        const s2 = document.createElement("script");
-        s2.src =
-          "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-        s2.onload = () => rd.readAsArrayBuffer(f);
-        s2.onerror = () =>
-          toast("XLSX 解析器載入失敗，請確認網路後重試", { type: "error" });
-        document.head.appendChild(s2);
+        /* 門市一次丟兩份 xls：解析器只載一次，第二份排隊等 onload */
+        if (!window.__xlsxLoading) {
+          window.__xlsxLoading = new Promise((res, rej) => {
+            const s2 = document.createElement("script");
+            s2.src =
+              "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+            s2.onload = res;
+            s2.onerror = rej;
+            document.head.appendChild(s2);
+          });
+        }
+        window.__xlsxLoading.then(
+          () => rd.readAsArrayBuffer(f),
+          () => {
+            window.__xlsxLoading = null;
+            toast("XLSX 解析器載入失敗，請確認網路後重試", { type: "error" });
+          }
+        );
       } else rd.readAsArrayBuffer(f);
     } else rd.readAsText(f);
   };
@@ -4834,6 +5123,30 @@ function ProfitCenter() {
       }
       const ch = byChannel[order.channel] || byChannel.retail;
       const excluded = posExcluded.includes(order.channel);
+      /* 通路層一律照算（表上看得到）；總計 KPI／商品表只加未被排除的通路 */
+      ch.rev += fin.gross;
+      ch.cost += fin.oCost;
+      ch.gp += fin.gp;
+      ch.net += fin.finalNet;
+      ch.orders++;
+      order.items.forEach((it) => {
+        ch.qty += it.qty || 1;
+      });
+      if (fin.missCost) ch.noCostRev += fin.gross;
+      else {
+        ch.coveredRev += fin.gross;
+        ch.coveredGp += fin.gp;
+        ch.coveredNet += fin.finalNet;
+      }
+      if (order.hasInvoice) ch.invoiceRev += fin.gross;
+      if (excluded) return;
+      /* 商品行營收＝結帳價×數量，是「全單折扣前」的價；把折扣按比例攤回各行，
+         商品毛利率才會跟訂單毛利率對得起來（例：公版華崗 400×8=3200、全單折 200、合計 3000） */
+      const lineSum = order.items.reduce(
+        (s, it) => s + (Number(it.price) || 0) * (it.qty || 1),
+        0
+      );
+      const scale = lineSum > 0 && fin.gross > 0 ? fin.gross / lineSum : 1;
       order.items.forEach((it) => {
         const has =
           Object.prototype.hasOwnProperty.call(it, "snapshotCost") &&
@@ -4841,10 +5154,9 @@ function ProfitCenter() {
         const unit = has
           ? Number(it.snapshotCost) || 0
           : Number(posEffCosts[it.key]) || 0;
-        const ir = (Number(it.price) || 0) * (it.qty || 1);
+        const ir = (Number(it.price) || 0) * (it.qty || 1) * scale;
         const ic = unit * (it.qty || 1);
         t.totalQty += it.qty || 1;
-        ch.qty += it.qty || 1;
         if (!mm[it.key])
           mm[it.key] = {
             key: it.key,
@@ -4860,20 +5172,6 @@ function ProfitCenter() {
         mm[it.key].totalCost += ic;
         mm[it.key].profitContribution += ir - ic;
       });
-      /* 通路層一律照算（表上看得到）；總計 KPI 只加未被排除的通路 */
-      ch.rev += fin.gross;
-      ch.cost += fin.oCost;
-      ch.gp += fin.gp;
-      ch.net += fin.finalNet;
-      ch.orders++;
-      if (fin.missCost) ch.noCostRev += fin.gross;
-      else {
-        ch.coveredRev += fin.gross;
-        ch.coveredGp += fin.gp;
-        ch.coveredNet += fin.finalNet;
-      }
-      if (order.hasInvoice) ch.invoiceRev += fin.gross;
-      if (excluded) return;
       t.rev += fin.gross;
       t.cost += fin.oCost;
       t.gp += fin.gp;
@@ -5322,6 +5620,8 @@ function ProfitCenter() {
     setPage(0);
     setExpandedId(null);
     setRecipeEditKey(null);
+    /* 門市兩份報表的暫存區只在門市頁有意義：離開就清，避免下次帶著舊檔 join */
+    if (platform !== "pos") posStage.current = { trans: null, orders: null };
   }, [lossOnly, dSearch, orderSort, sY, sM, platform, range]);
 
   /* 首次載入資料時自動跳到最新月份（僅一次；手動切換年份會重設月份） */
@@ -5346,24 +5646,32 @@ function ProfitCenter() {
 
   const slUsage = useMemo(() => buildUsage(slOrders), [slOrders]);
   const spUsage = useMemo(() => buildUsage(spOrders), [spOrders]);
+  const posUsage = useMemo(() => buildUsage(posOrders), [posOrders]);
 
   const matrixList = useMemo(() => {
-    const source = (isSL ? slData?.matrixList : spData?.uniqueProducts) || [];
-    const usage = isSL ? slUsage : spUsage;
+    const source =
+      (isPOS
+        ? posData?.matrixList
+        : isSL
+        ? slData?.matrixList
+        : spData?.uniqueProducts) || [];
+    const usage = isPOS ? posUsage : isSL ? slUsage : spUsage;
     /* 孤兒條目：有成本/配方但本期無銷售的商品——蝦皮先前完全看不到、無法刪除。
        用全歷史訂單找回商品名；查無紀錄則顯示 key */
     const known = new Set(source.map((p) => p.key));
     const orphanKeys = [
       ...new Set([...Object.keys(costs), ...Object.keys(recipes)]),
     ].filter((k) => !known.has(k));
+    /* 官網／門市的 key 都是「商品名_選項」，可直接拆；蝦皮是 id 對 */
+    const splitKey = isSL || isPOS;
     const orphans = orphanKeys.map((k) => {
       const nm = usage.nameMap[k];
-      const parts = isSL ? k.split("_") : null;
+      const parts = splitKey ? k.split("_") : null;
       return {
         key: k,
-        name: nm?.name || (isSL ? parts[0] : `（查無商品名）${k}`),
+        name: nm?.name || (splitKey ? parts[0] : `（查無商品名）${k}`),
         option:
-          nm?.option ?? (isSL ? parts?.[1]?.trim() || "標準規格" : ""),
+          nm?.option ?? (splitKey ? parts?.[1]?.trim() || "標準規格" : ""),
         soldQty: 0,
         profitContribution: 0,
         estProfit: 0,
@@ -5423,8 +5731,10 @@ function ProfitCenter() {
       });
   }, [
     isSL,
+    isPOS,
     slData,
     spData,
+    posData,
     dMSearch,
     costSort,
     costsEff,
@@ -5432,6 +5742,7 @@ function ProfitCenter() {
     recipes,
     slUsage,
     spUsage,
+    posUsage,
     cleanupOnly,
     soldOnly,
   ]);
@@ -5558,26 +5869,27 @@ function ProfitCenter() {
     [filteredOrders, curPage, pageSize]
   );
 
+  /* 目前平台的訂單集（快照鎖定／參數檢視共用；門市與官網蝦皮同一套機制） */
+  const ordersOfPlatform = isPOS ? posOrders : isSL ? slOrders : spOrders;
   const isLocked = useMemo(() => {
     if (!currentData?.orderList?.length) return false;
-    const src = isSL ? slOrders : spOrders;
+    const src = ordersOfPlatform;
     return currentData.orderList.every((o) => {
       const t = src[o.orderId];
-      return (
-        t?.snapshotFeeParams &&
-        t?.items?.length &&
-        t.items.every((i) =>
-          Object.prototype.hasOwnProperty.call(i, "snapshotCost")
-        )
+      if (!t?.snapshotFeeParams) return false;
+      /* 門市「交易有、明細沒對到」的單沒有品項可凍結成本，只凍參數即視為已鎖 */
+      if (!t.items?.length) return isPOS;
+      return t.items.every((i) =>
+        Object.prototype.hasOwnProperty.call(i, "snapshotCost")
       );
     });
-  }, [currentData, isSL, slOrders, spOrders]);
+  }, [currentData, ordersOfPlatform, isPOS]);
 
   /* 目前檢視期間鎖進快照的費率參數（回答「這個月當時用的是幾 %」）；
      期間內若有多組（各月不同）會分組列出 */
   const snapParams = useMemo(() => {
     if (!currentData?.orderList?.length) return null;
-    const src = isSL ? slOrders : spOrders;
+    const src = ordersOfPlatform;
     const norm = (v) =>
       v === null || v === undefined || Number.isNaN(Number(v))
         ? null
@@ -5609,13 +5921,14 @@ function ProfitCenter() {
     if (!sets.size) return null;
     const list = [...sets.values()].sort((a, b) => b.count - a.count);
     return { list, mixed: sets.size > 1, nullCostCount: nullCostKeys.size };
-  }, [currentData, isSL, slOrders, spOrders]);
+  }, [currentData, ordersOfPlatform]);
   const pct = (v) => (v === null ? "—" : `${v}%`);
 
   const toggleSnap = () => {
     if (!currentData?.orderList?.length) return;
-    /* 各月營業費 % 不同：限制單一月份操作，避免跨月訂單被寫入同一組（今天的）參數 */
-    if (sY === "All" || sY === "Custom" || sM === "All") {
+    /* 各月營業費 % 不同：限制單一月份操作，避免跨月訂單被寫入同一組（今天的）參數
+       （用 effM：該平台沒資料的月份會被視為全月份，不能拿來鎖） */
+    if (sY === "All" || sY === "Custom" || effM === "All") {
       toast(
         "請先切換到「單一月份」再鎖定/解除快照——各月營業費 % 不同，跨月操作會把同一組參數寫進所有月份",
         { type: "warning", duration: 8000 }
@@ -5624,18 +5937,21 @@ function ProfitCenter() {
     }
     const wasLocked = isLocked;
     const apply = () => {
-      const fp = isSL ? slFp : spFp;
-      const setter = isSL ? setSlOrders : setSpOrders;
+      /* 門市沿用官網的營業費／稅率參數（無平台抽成，platformFeeRate 不適用） */
+      const fp = isSL || isPOS ? slFp : spFp;
+      const setter = isPOS ? setPosOrders : isSL ? setSlOrders : setSpOrders;
       /* functional update：以「按下確定當下」的最新訂單集為基底，
          避免確認框開啟期間遠端同步進來的訂單被過期閉包覆蓋 */
       setter((src) => {
         const no = { ...src };
         currentData.orderList.forEach((o) => {
           const tg = no[o.orderId];
-          if (!tg?.items?.length) return;
+          if (!tg) return;
+          /* 門市無明細單也要凍參數（營業費／稅率），否則該月永遠鎖不起來；官網蝦皮維持原邏輯 */
+          if (!tg.items?.length && !isPOS) return;
           if (wasLocked) {
             const nx = { ...tg };
-            nx.items = tg.items.map((i) => {
+            nx.items = (tg.items || []).map((i) => {
               const ni = { ...i };
               delete ni.snapshotCost;
               return ni;
@@ -5646,12 +5962,12 @@ function ProfitCenter() {
             no[o.orderId] = {
               ...tg,
               snapshotFeeParams: {
-                platformFeeRate: numOrNull(fp.platformFeeRate),
+                platformFeeRate: isPOS ? null : numOrNull(fp.platformFeeRate),
                 opExpense: numOrNull(fp.opExpense),
                 tax: numOrNull(fp.tax),
                 targetNet: numOrNull(fp.targetNet),
               },
-              items: tg.items.map((i) => ({
+              items: (tg.items || []).map((i) => ({
                 ...i,
                 /* 快照凍結「有效成本」（配方算出的數字），之後改組件不影響本期 */
                 snapshotCost:
@@ -5668,10 +5984,10 @@ function ProfitCenter() {
         type: "success",
       });
     };
-    const fp = isSL ? slFp : spFp;
+    const fp = isSL || isPOS ? slFp : spFp;
     const curLine = `營業費 ${fp.opExpense}%・稅率 ${fp.tax}%${
       isSL ? `・系統費 ${fp.platformFeeRate}%` : ""
-    }`;
+    }${isPOS ? "（門市：稅只課有開發票的單）" : ""}`;
     const snapLine =
       snapParams && !snapParams.mixed
         ? `營業費 ${pct(snapParams.list[0].opExpense)}・稅率 ${pct(
@@ -5696,9 +6012,10 @@ function ProfitCenter() {
 
   const expC = () => {
     /* v2 備份：手填成本＋本平台配方＋共用原料庫一起打包 */
+    const pfTag = isPOS ? "pos" : isSL ? "sl" : "sp";
     const bundle = {
       __v: 2,
-      platform: isSL ? "sl" : "sp",
+      platform: pfTag,
       costs,
       recipes,
       components,
@@ -5708,7 +6025,7 @@ function ProfitCenter() {
     });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(b);
-    a.download = `${isSL ? "sl" : "sp"}_costs_${
+    a.download = `${pfTag}_costs_${
       new Date().toISOString().split("T")[0]
     }.json`;
     a.click();
@@ -5745,7 +6062,7 @@ function ProfitCenter() {
   /* ─── 原料庫與配方操作 ────────────────────────────────────── */
   const compUsage = useMemo(() => {
     const u = {};
-    [slRecipes, spRecipes].forEach((rs) =>
+    [slRecipes, spRecipes, posRecipes].forEach((rs) =>
       Object.values(rs || {}).forEach((lines) =>
         (lines || []).forEach((l) => {
           u[l.compId] = (u[l.compId] || 0) + 1;
@@ -5753,7 +6070,7 @@ function ProfitCenter() {
       )
     );
     return u;
-  }, [slRecipes, spRecipes]);
+  }, [slRecipes, spRecipes, posRecipes]);
   const addComponent = () => {
     const name = safeText(newComp.name);
     const price = Number(newComp.price);
@@ -6056,6 +6373,1070 @@ function ProfitCenter() {
     : isSL
     ? "var(--accent-bdr)"
     : "var(--sp-accent-bdr)";
+
+  /* ─── 商品成本資料庫卡（官網／蝦皮／門市三處共用：手填成本＋配方編輯器＋原料庫＋備份還原） ── */
+  const costMatrixCard = (
+                <div
+                  className="f4"
+                  style={{
+                    background: "var(--s1)",
+                    border: "1px solid var(--s3)",
+                    borderRadius: 16,
+                    padding: 24,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      alignItems: "center",
+                      marginBottom: 14,
+                    }}
+                  >
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      <Package size={16} color="var(--t3)" />
+                      <span style={{ fontSize: 14, fontWeight: 700 }}>
+                        商品成本資料庫
+                      </span>
+                      <span style={{ fontSize: 11, color: "var(--t3)" }}>
+                        共 {missCost.total} 項
+                      </span>
+                    </div>
+                    <div
+                      style={{ display: "flex", gap: 6, alignItems: "center" }}
+                    >
+                      <Btn onClick={expC}>
+                        <Download size={12} /> 備份
+                      </Btn>
+                      <Btn v="primary" onClick={() => cRef.current?.click()}>
+                        <UploadCloud size={12} /> 還原
+                      </Btn>
+                      <input
+                        ref={cRef}
+                        type="file"
+                        accept=".json"
+                        onChange={impC}
+                        style={{ display: "none" }}
+                      />
+                    </div>
+                  </div>
+                  {/* ── 成本組件（原料庫）：兩平台共用單價 ── */}
+                  <div
+                    style={{
+                      border: "1px solid var(--s3)",
+                      borderRadius: 12,
+                      padding: "12px 14px",
+                      background: "var(--s2)",
+                      marginBottom: 14,
+                    }}
+                  >
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={compPanelOpen}
+                      onClick={() => setCompPanelOpen((v) => !v)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setCompPanelOpen((v) => !v);
+                        }
+                      }}
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: "var(--t2)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        cursor: "pointer",
+                        userSelect: "none",
+                      }}
+                    >
+                      {compPanelOpen ? (
+                        <ChevronUp size={13} color="var(--t3)" />
+                      ) : (
+                        <ChevronDown size={13} color="var(--t3)" />
+                      )}
+                      <Layers size={13} color="var(--accent-text)" />
+                      成本組件（原料庫・兩平台共用）
+                      <span
+                        style={{
+                          fontFamily: mono,
+                          color: "var(--t3)",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {Object.keys(components).length} 顆・
+                        {compGroups.length} 分類
+                      </span>
+                      {!compPanelOpen && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "var(--t4)",
+                            fontWeight: 500,
+                            marginLeft: "auto",
+                          }}
+                        >
+                          點擊展開管理
+                        </span>
+                      )}
+                    </div>
+                    {compPanelOpen && (
+                      <>
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: "var(--t4)",
+                            margin: "6px 0 10px",
+                            lineHeight: 1.6,
+                          }}
+                        >
+                          改這裡一個單價＝所有掛配方的商品自動重算（已鎖定月份不受影響）。商品掛配方：點商品列尾的
+                          <Layers
+                            size={10}
+                            style={{ margin: "0 2px", verticalAlign: "-1px" }}
+                          />
+                          圖示。
+                        </div>
+                        <div style={{ position: "relative", marginBottom: 8 }}>
+                          <Search
+                            size={12}
+                            color="var(--t4)"
+                            style={{
+                              position: "absolute",
+                              left: 10,
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                            }}
+                          />
+                          <input
+                            type="text"
+                            value={compSearch}
+                            placeholder="搜尋組件名稱或分類..."
+                            aria-label="搜尋成本組件"
+                            onChange={(e) => setCompSearch(e.target.value)}
+                            style={{
+                              ...inp,
+                              width: "100%",
+                              maxWidth: 300,
+                              textAlign: "left",
+                              paddingLeft: 30,
+                              borderRadius: 8,
+                              padding: "7px 10px 7px 30px",
+                              fontSize: 12,
+                            }}
+                          />
+                        </div>
+                    <datalist id="comp-cats">
+                      {compCats.map((c) => (
+                        <option key={c} value={c} />
+                      ))}
+                    </datalist>
+                    {compGroups
+                      .map(([cat, list]) => {
+                        const q = dCompSearch.trim().toLowerCase();
+                        const shown = q
+                          ? list.filter(
+                              ([, c]) =>
+                                c.name.toLowerCase().includes(q) ||
+                                (c.cat || "").toLowerCase().includes(q)
+                            )
+                          : list;
+                        return [cat, shown];
+                      })
+                      .filter(([, shown]) => shown.length > 0)
+                      .map(([cat, list]) => {
+                        const catOpen =
+                          !!compCatOpen[cat] || !!dCompSearch.trim();
+                        return (
+                      <div
+                        key={cat}
+                        style={{
+                          border: "1px solid var(--s3)",
+                          borderRadius: 10,
+                          marginBottom: 6,
+                          background: "var(--s1)",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={catOpen}
+                          onClick={() =>
+                            setCompCatOpen((p) => ({ ...p, [cat]: !p[cat] }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setCompCatOpen((p) => ({
+                                ...p,
+                                [cat]: !p[cat],
+                              }));
+                            }
+                          }}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "8px 10px",
+                            cursor: "pointer",
+                            fontSize: 11,
+                            fontWeight: 800,
+                            userSelect: "none",
+                          }}
+                        >
+                          {catOpen ? (
+                            <ChevronUp size={12} color="var(--t3)" />
+                          ) : (
+                            <ChevronDown size={12} color="var(--t3)" />
+                          )}
+                          <span style={{ color: "var(--accent-text)" }}>
+                            {cat}
+                          </span>
+                          <span
+                            style={{
+                              color: "var(--t3)",
+                              fontWeight: 600,
+                              fontFamily: mono,
+                            }}
+                          >
+                            {list.length}
+                          </span>
+                        </div>
+                        {catOpen && (
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 8,
+                            alignItems: "center",
+                            padding: "0 10px 10px",
+                          }}
+                        >
+                          {list.map(([id, c]) => (
+                            <div
+                              key={id}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                background: "var(--s1)",
+                                border: "1px solid var(--s3)",
+                                borderRadius: 8,
+                                padding: "4px 6px",
+                              }}
+                            >
+                              <input
+                                key={id + "_" + c.name}
+                                defaultValue={c.name}
+                                aria-label="組件名稱"
+                                onBlur={(e) =>
+                                  commitCompField(id, "name", e.target.value)
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter")
+                                    e.currentTarget.blur();
+                                }}
+                                style={{
+                                  ...inp,
+                                  width: 110,
+                                  textAlign: "left",
+                                  fontSize: 11,
+                                  padding: "4px 6px",
+                                  fontFamily:
+                                    "'Inter','Noto Sans TC',sans-serif",
+                                }}
+                              />
+                              <FpInput
+                                field={id}
+                                label={`${c.name} 單價`}
+                                value={c.price}
+                                onCommit={(cid, v) =>
+                                  commitCompField(cid, "price", v)
+                                }
+                              />
+                              <input
+                                key={id + "_c_" + (c.cat || "")}
+                                defaultValue={c.cat || ""}
+                                list="comp-cats"
+                                placeholder="分類"
+                                aria-label={`${c.name} 分類`}
+                                onBlur={(e) =>
+                                  commitCompField(id, "cat", e.target.value)
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter")
+                                    e.currentTarget.blur();
+                                }}
+                                style={{
+                                  ...inp,
+                                  width: 76,
+                                  textAlign: "left",
+                                  fontSize: 10,
+                                  padding: "4px 6px",
+                                  fontFamily:
+                                    "'Inter','Noto Sans TC',sans-serif",
+                                }}
+                              />
+                              {(compUsage[id] || 0) > 0 && (
+                                <span
+                                  style={{
+                                    fontSize: 9,
+                                    fontFamily: mono,
+                                    color: "var(--t3)",
+                                    fontWeight: 700,
+                                  }}
+                                  title="被幾個配方使用"
+                                >
+                                  ×{compUsage[id]}
+                                </span>
+                              )}
+                              <Btn
+                                v="ghost"
+                                aria-label={`刪除組件 ${c.name}`}
+                                onClick={() => deleteComponent(id)}
+                                style={{ padding: 2 }}
+                              >
+                                <Trash2 size={11} color="var(--t4)" />
+                              </Btn>
+                            </div>
+                          ))}
+                        </div>
+                        )}
+                      </div>
+                        );
+                      })}
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        gap: 4,
+                        marginTop: compGroups.length ? 4 : 0,
+                      }}
+                    >
+                      <input
+                        value={newComp.name}
+                        placeholder="新組件名稱（例：高山茶 150g）"
+                        aria-label="新組件名稱"
+                        onChange={(e) =>
+                          setNewComp((p) => ({ ...p, name: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") addComponent();
+                        }}
+                        style={{
+                          ...inp,
+                          width: 170,
+                          textAlign: "left",
+                          fontSize: 11,
+                          padding: "4px 6px",
+                          fontFamily: "'Inter','Noto Sans TC',sans-serif",
+                        }}
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={newComp.price}
+                        placeholder="單價"
+                        aria-label="新組件單價"
+                        onChange={(e) =>
+                          setNewComp((p) => ({
+                            ...p,
+                            price: e.target.value,
+                          }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") addComponent();
+                        }}
+                        style={{ ...inp, width: 72, fontSize: 11 }}
+                      />
+                      <input
+                        value={newComp.cat}
+                        list="comp-cats"
+                        placeholder="分類（例：茶葉）"
+                        aria-label="新組件分類"
+                        onChange={(e) =>
+                          setNewComp((p) => ({ ...p, cat: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") addComponent();
+                        }}
+                        style={{
+                          ...inp,
+                          width: 110,
+                          textAlign: "left",
+                          fontSize: 11,
+                          padding: "4px 6px",
+                          fontFamily: "'Inter','Noto Sans TC',sans-serif",
+                        }}
+                      />
+                      <Btn v="primary" onClick={addComponent}>
+                        新增
+                      </Btn>
+                    </div>
+                      </>
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                      gap: 10,
+                      marginBottom: 14,
+                    }}
+                  >
+                    <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 360 }}>
+                      <Search
+                        size={14}
+                        color="var(--t4)"
+                        style={{
+                          position: "absolute",
+                          left: 12,
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                        }}
+                      />
+                      <input
+                        type="text"
+                        placeholder="搜尋商品名稱或規格 ..."
+                        aria-label="搜尋商品名稱或規格"
+                        value={mSearch}
+                        onChange={(e) => setMSearch(e.target.value)}
+                        style={{
+                          ...inp,
+                          width: "100%",
+                          textAlign: "left",
+                          paddingLeft: 36,
+                          borderRadius: 10,
+                          padding: "10px 12px 10px 36px",
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--t3)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={cleanupOnly}
+                        onChange={(e) => setCleanupOnly(e.target.checked)}
+                        style={{ accentColor: "var(--wn)" }}
+                      />{" "}
+                      只看可清理（180 天未售/無紀錄）
+                    </label>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--t3)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={soldOnly}
+                        onChange={(e) => setSoldOnly(e.target.checked)}
+                        style={{ accentColor }}
+                      />{" "}
+                      只顯示本期有銷售
+                    </label>
+                    {cleanupOnly && matrixList.length > 0 && (
+                      <Btn v="danger" onClick={bulkCleanStale}>
+                        <Trash2 size={11} /> 清除清單全部 {matrixList.length} 項
+                      </Btn>
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      overflowX: "auto",
+                      overflowY: "auto",
+                      maxHeight: 480,
+                      border: "1px solid var(--s3)",
+                      borderRadius: 12,
+                    }}
+                  >
+                    <table
+                      style={{
+                        width: "100%",
+                        borderCollapse: "collapse",
+                        minWidth: 760,
+                      }}
+                    >
+                      <thead>
+                        <tr>
+                          <SortTh
+                            sortKey="name"
+                            currentSort={costSort}
+                            onSort={(k) =>
+                              setCostSort((p) => ({
+                                key: k,
+                                dir:
+                                  p.key === k
+                                    ? p.dir === "desc"
+                                      ? "asc"
+                                      : "desc"
+                                    : "desc",
+                              }))
+                            }
+                          >
+                            商品名稱
+                          </SortTh>
+                          <th scope="col" style={{ ...th, textAlign: "left" }}>
+                            規格
+                          </th>
+                          <SortTh
+                            sortKey="soldQty"
+                            currentSort={costSort}
+                            onSort={(k) =>
+                              setCostSort((p) => ({
+                                key: k,
+                                dir:
+                                  p.key === k
+                                    ? p.dir === "desc"
+                                      ? "asc"
+                                      : "desc"
+                                    : "desc",
+                              }))
+                            }
+                            align="right"
+                          >
+                            銷量
+                          </SortTh>
+                          <SortTh
+                            sortKey="profit"
+                            currentSort={costSort}
+                            onSort={(k) =>
+                              setCostSort((p) => ({
+                                key: k,
+                                dir:
+                                  p.key === k
+                                    ? p.dir === "desc"
+                                      ? "asc"
+                                      : "desc"
+                                    : "desc",
+                              }))
+                            }
+                            align="right"
+                          >
+                            淨利貢獻
+                          </SortTh>
+                          <SortTh
+                            sortKey="margin"
+                            currentSort={costSort}
+                            onSort={(k) =>
+                              setCostSort((p) => ({
+                                key: k,
+                                dir:
+                                  p.key === k
+                                    ? p.dir === "desc"
+                                      ? "asc"
+                                      : "desc"
+                                    : "desc",
+                              }))
+                            }
+                            align="right"
+                          >
+                            毛利率
+                          </SortTh>
+                          <SortTh
+                            sortKey="cost"
+                            currentSort={costSort}
+                            onSort={(k) =>
+                              setCostSort((p) => ({
+                                key: k,
+                                dir:
+                                  p.key === k
+                                    ? p.dir === "desc"
+                                      ? "asc"
+                                      : "desc"
+                                    : "desc",
+                              }))
+                            }
+                            align="right"
+                          >
+                            單位成本
+                          </SortTh>
+                          <th
+                            scope="col"
+                            style={{ ...th, textAlign: "center", width: 40 }}
+                          ></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!matrixList.length ? (
+                          <tr>
+                            <td
+                              colSpan={7}
+                              style={{
+                                ...td2,
+                                textAlign: "center",
+                                color: "var(--t4)",
+                                padding: 40,
+                              }}
+                            >
+                              尚無商品數據
+                            </td>
+                          </tr>
+                        ) : (
+                          (() => {
+                            let missFound = false;
+                            return matrixList.map((p) => {
+                              const miss = missCost.keys.has(p.key),
+                                hs = p.soldQty > 0;
+                              const isFirstMiss = miss && !missFound;
+                              if (isFirstMiss) missFound = true;
+                              const profitVal =
+                                p.profitContribution ?? p.estProfit ?? 0;
+                              const gmVal =
+                                p.totalRevenue > 0
+                                  ? (p.totalRevenue - p.totalCost) /
+                                    p.totalRevenue
+                                  : null;
+                              const hasRecipe =
+                                Array.isArray(recipes[p.key]) &&
+                                recipes[p.key].length > 0;
+                              return (
+                                <React.Fragment key={p.key}>
+                                <tr
+                                  ref={isFirstMiss ? firstMissRef : undefined}
+                                  className={miss && hs ? "rw" : ""}
+                                >
+                                  <td
+                                    style={{
+                                      ...td2,
+                                      fontWeight: 600,
+                                      maxWidth: 260,
+                                      overflow: "hidden",
+                                    }}
+                                    title={p.name}
+                                  >
+                                    <div
+                                      style={{
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                      }}
+                                    >
+                                      {p.name}
+                                    </div>
+                                    {p.stale && (
+                                      <div
+                                        style={{
+                                          fontSize: 9,
+                                          fontWeight: 700,
+                                          marginTop: 2,
+                                          whiteSpace: "nowrap",
+                                          color: p.neverSold
+                                            ? "var(--t3)"
+                                            : "var(--wn)",
+                                        }}
+                                      >
+                                        {p.neverSold
+                                          ? "無銷售紀錄"
+                                          : `久未售出・最後 ${p.lastSold}（${p.staleDays} 天前）`}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td
+                                    style={{
+                                      ...td2,
+                                      color: "var(--t3)",
+                                      fontSize: 12,
+                                    }}
+                                  >
+                                    {p.option}
+                                  </td>
+                                  <td
+                                    style={{
+                                      ...td2,
+                                      textAlign: "right",
+                                      fontWeight: 700,
+                                      fontFamily: mono,
+                                    }}
+                                  >
+                                    {p.soldQty}
+                                  </td>
+                                  <td
+                                    style={{
+                                      ...td2,
+                                      textAlign: "right",
+                                      fontWeight: 700,
+                                      fontFamily: mono,
+                                      color:
+                                        profitVal >= 0
+                                          ? "var(--up)"
+                                          : "var(--dn)",
+                                    }}
+                                  >
+                                    {fmt$(profitVal)}
+                                  </td>
+                                  <td
+                                    style={{
+                                      ...td2,
+                                      textAlign: "right",
+                                      fontWeight: 600,
+                                      fontFamily: mono,
+                                      color:
+                                        gmVal === null
+                                          ? "var(--t4)"
+                                          : gmVal < 0
+                                          ? "var(--dn)"
+                                          : gmVal < 0.35
+                                          ? "var(--wn)"
+                                          : "var(--t1)",
+                                    }}
+                                  >
+                                    {gmVal === null
+                                      ? "—"
+                                      : `${(gmVal * 100).toFixed(1)}%`}
+                                  </td>
+                                  <td style={{ ...td2, textAlign: "right" }}>
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "flex-end",
+                                        gap: 4,
+                                      }}
+                                    >
+                                      {miss && hs && !hasRecipe && (
+                                        <span
+                                          style={{
+                                            fontSize: 10,
+                                            color: "var(--wn)",
+                                            fontWeight: 700,
+                                          }}
+                                        >
+                                          —
+                                        </span>
+                                      )}
+                                      {hasRecipe ? (
+                                        <span
+                                          role="button"
+                                          tabIndex={0}
+                                          title="配方計算值——點擊編輯配方"
+                                          onClick={() =>
+                                            setRecipeEditKey(
+                                              recipeEditKey === p.key
+                                                ? null
+                                                : p.key
+                                            )
+                                          }
+                                          onKeyDown={(e) => {
+                                            if (
+                                              e.key === "Enter" ||
+                                              e.key === " "
+                                            ) {
+                                              e.preventDefault();
+                                              setRecipeEditKey(
+                                                recipeEditKey === p.key
+                                                  ? null
+                                                  : p.key
+                                              );
+                                            }
+                                          }}
+                                          style={{
+                                            fontFamily: mono,
+                                            fontWeight: 700,
+                                            fontSize: 13,
+                                            color: "var(--accent-text)",
+                                            cursor: "pointer",
+                                            whiteSpace: "nowrap",
+                                          }}
+                                        >
+                                          {fmt$d(costsEff[p.key])}
+                                          <span
+                                            style={{
+                                              fontSize: 9,
+                                              marginLeft: 4,
+                                              color: "var(--t3)",
+                                              fontWeight: 600,
+                                            }}
+                                          >
+                                            配方
+                                          </span>
+                                        </span>
+                                      ) : (
+                                        <CostInput
+                                          costKey={p.key}
+                                          label={`${p.name} ${
+                                            p.option || ""
+                                          } 單位成本`}
+                                          value={costs[p.key]}
+                                          miss={miss}
+                                          onCommit={commitCost}
+                                        />
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td style={{ ...td2, textAlign: "center" }}>
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        gap: 2,
+                                        justifyContent: "center",
+                                      }}
+                                    >
+                                      <Btn
+                                        v="ghost"
+                                        aria-label={`編輯 ${p.name} 的配方`}
+                                        title="配方（組件×用量）"
+                                        onClick={() =>
+                                          setRecipeEditKey(
+                                            recipeEditKey === p.key
+                                              ? null
+                                              : p.key
+                                          )
+                                        }
+                                        style={{ padding: "2px" }}
+                                      >
+                                        <Layers
+                                          size={12}
+                                          color={
+                                            hasRecipe
+                                              ? "var(--accent-text)"
+                                              : "var(--t4)"
+                                          }
+                                        />
+                                      </Btn>
+                                      <Btn
+                                        v="ghost"
+                                        aria-label={`刪除 ${p.name} 的成本設定`}
+                                        onClick={() =>
+                                          setConfirmBox({
+                                            title: "刪除成本設定",
+                                            message: `確定刪除「${p.name}${
+                                              p.option &&
+                                              p.option !== "標準規格"
+                                                ? `（${p.option}）`
+                                                : ""
+                                            }」的手填單位成本？${
+                                              hasRecipe
+                                                ? "\n（此商品掛有配方，配方不受影響、仍以配方計算）"
+                                                : ""
+                                            }`,
+                                            danger: true,
+                                            onOk: () => {
+                                              const n = { ...costs };
+                                              delete n[p.key];
+                                              setCosts(n);
+                                            },
+                                          })
+                                        }
+                                        style={{ padding: "2px" }}
+                                      >
+                                        <Trash2 size={12} color="var(--t4)" />
+                                      </Btn>
+                                    </div>
+                                  </td>
+                                </tr>
+                                {recipeEditKey === p.key && (
+                                  <tr>
+                                    <td
+                                      colSpan={7}
+                                      style={{
+                                        ...td2,
+                                        background: "var(--s2)",
+                                        padding: "14px 18px",
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontSize: 12,
+                                          fontWeight: 700,
+                                          color: "var(--t1)",
+                                          marginBottom: 8,
+                                        }}
+                                      >
+                                        配方：{p.name}
+                                        {p.option && p.option !== "標準規格"
+                                          ? `（${p.option}）`
+                                          : ""}
+                                        <span
+                                          style={{
+                                            color: "var(--t3)",
+                                            fontWeight: 500,
+                                            marginLeft: 8,
+                                            fontSize: 11,
+                                          }}
+                                        >
+                                          單位成本＝各組件單價×用量加總
+                                        </span>
+                                      </div>
+                                      {(recipes[p.key] || []).map((l, li) => {
+                                        const comp = components[l.compId];
+                                        return (
+                                          <div
+                                            key={li}
+                                            style={{
+                                              display: "flex",
+                                              alignItems: "center",
+                                              gap: 8,
+                                              padding: "3px 0",
+                                              fontSize: 12,
+                                            }}
+                                          >
+                                            <span
+                                              style={{
+                                                minWidth: 150,
+                                                color: comp
+                                                  ? "var(--t1)"
+                                                  : "var(--dn)",
+                                                fontWeight: 600,
+                                              }}
+                                            >
+                                              {comp
+                                                ? comp.name
+                                                : "（組件已刪除，成本以 0 計）"}
+                                            </span>
+                                            <span
+                                              style={{
+                                                color: "var(--t4)",
+                                                fontSize: 11,
+                                              }}
+                                            >
+                                              ×
+                                            </span>
+                                            <FpInput
+                                              field={li}
+                                              label="用量"
+                                              value={l.qty}
+                                              onCommit={(idx, v) =>
+                                                setRecipeLine(p.key, idx, {
+                                                  qty: Number(v) || 0,
+                                                })
+                                              }
+                                            />
+                                            <span
+                                              style={{
+                                                fontFamily: mono,
+                                                color: "var(--t2)",
+                                                fontSize: 11,
+                                                minWidth: 88,
+                                                textAlign: "right",
+                                              }}
+                                            >
+                                              ={" "}
+                                              {fmt$d(
+                                                (Number(comp?.price) || 0) *
+                                                  (Number(l.qty) || 0)
+                                              )}
+                                            </span>
+                                            <Btn
+                                              v="ghost"
+                                              aria-label="移除此組件"
+                                              onClick={() =>
+                                                setRecipeLine(p.key, li, null)
+                                              }
+                                              style={{ padding: 2 }}
+                                            >
+                                              <X
+                                                size={12}
+                                                color="var(--t4)"
+                                              />
+                                            </Btn>
+                                          </div>
+                                        );
+                                      })}
+                                      <div
+                                        style={{
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: 8,
+                                          marginTop: 8,
+                                          flexWrap: "wrap",
+                                        }}
+                                      >
+                                        <CompPicker
+                                          compGroups={compGroups}
+                                          onPick={(id) =>
+                                            addRecipeLine(p.key, id)
+                                          }
+                                        />
+                                        <span
+                                          style={{
+                                            fontFamily: mono,
+                                            fontWeight: 800,
+                                            fontSize: 13,
+                                            color: "var(--accent-text)",
+                                            marginLeft: "auto",
+                                          }}
+                                        >
+                                          合計{" "}
+                                          {fmt$d(
+                                            recipeCost(
+                                              recipes[p.key],
+                                              components
+                                            )
+                                          )}
+                                        </span>
+                                        {(recipes[p.key] || []).length > 0 && (
+                                          <Btn
+                                            v="danger"
+                                            onClick={() =>
+                                              removeRecipe(p.key)
+                                            }
+                                            style={{ fontSize: 10 }}
+                                          >
+                                            移除配方
+                                          </Btn>
+                                        )}
+                                        <Btn
+                                          onClick={() =>
+                                            setRecipeEditKey(null)
+                                          }
+                                          style={{ fontSize: 10 }}
+                                        >
+                                          完成
+                                        </Btn>
+                                      </div>
+                                      {Object.keys(components).length ===
+                                        0 && (
+                                        <div
+                                          style={{
+                                            fontSize: 11,
+                                            color: "var(--wn)",
+                                            marginTop: 6,
+                                          }}
+                                        >
+                                          原料庫還沒有組件——先在上方「成本組件」新增（例：高山茶
+                                          150g、茶包袋、禮盒A、提袋）
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )}
+                                </React.Fragment>
+                              );
+                            });
+                          })()
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+  );
 
   return (
     <div
@@ -6410,6 +7791,13 @@ function ProfitCenter() {
                   }}
                 >
                   <Settings size={12} /> 財務模型參數
+                  {isPOS && (
+                    <span
+                      style={{ fontWeight: 500, color: "var(--t4)", fontSize: 10 }}
+                    >
+                      （與官網共用同一組）
+                    </span>
+                  )}
                 </div>
                 {snapParams && (
                   <div
@@ -6673,16 +8061,28 @@ function ProfitCenter() {
                 </div>
               </div>
             ) : isPOS ? (
-              <POSDashboard
-                data={posData}
-                excluded={posExcluded}
-                onSetExcluded={setPosExcluded}
-                accentColor={accentColor}
-                accentDim={accentDim}
-                accentBdr={accentBdr}
-                opExpense={parseFloat(slFp.opExpense) || 0}
-                taxRate={parseFloat(slFp.tax) || 0}
-              />
+              <>
+                <POSDashboard
+                  data={posData}
+                  excluded={posExcluded}
+                  onSetExcluded={setPosExcluded}
+                  accentColor={accentColor}
+                  accentDim={accentDim}
+                  accentBdr={accentBdr}
+                  opExpense={parseFloat(slFp.opExpense) || 0}
+                  taxRate={parseFloat(slFp.tax) || 0}
+                  isLocked={isLocked}
+                  snapParams={snapParams}
+                  onToggleSnap={toggleSnap}
+                  canLock={sY !== "All" && sY !== "Custom" && effM !== "All"}
+                  missN={missCost.n}
+                  onJumpMiss={jumpToFirstMissCost}
+                  costsEff={posEffCosts}
+                  recipes={posRecipes}
+                  components={components}
+                />
+                {costMatrixCard}
+              </>
             ) : (
               <>
                 {/* 本期零筆提示：區分「沒匯資料/期間選錯」與「業績歸零」，
@@ -7788,1067 +9188,8 @@ function ProfitCenter() {
                   </>
                 )}
 
-                {/* ── Cost Matrix ── */}
-                <div
-                  className="f4"
-                  style={{
-                    background: "var(--s1)",
-                    border: "1px solid var(--s3)",
-                    borderRadius: 16,
-                    padding: 24,
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      alignItems: "center",
-                      marginBottom: 14,
-                    }}
-                  >
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 8 }}
-                    >
-                      <Package size={16} color="var(--t3)" />
-                      <span style={{ fontSize: 14, fontWeight: 700 }}>
-                        商品成本資料庫
-                      </span>
-                      <span style={{ fontSize: 11, color: "var(--t3)" }}>
-                        共 {missCost.total} 項
-                      </span>
-                    </div>
-                    <div
-                      style={{ display: "flex", gap: 6, alignItems: "center" }}
-                    >
-                      <Btn onClick={expC}>
-                        <Download size={12} /> 備份
-                      </Btn>
-                      <Btn v="primary" onClick={() => cRef.current?.click()}>
-                        <UploadCloud size={12} /> 還原
-                      </Btn>
-                      <input
-                        ref={cRef}
-                        type="file"
-                        accept=".json"
-                        onChange={impC}
-                        style={{ display: "none" }}
-                      />
-                    </div>
-                  </div>
-                  {/* ── 成本組件（原料庫）：兩平台共用單價 ── */}
-                  <div
-                    style={{
-                      border: "1px solid var(--s3)",
-                      borderRadius: 12,
-                      padding: "12px 14px",
-                      background: "var(--s2)",
-                      marginBottom: 14,
-                    }}
-                  >
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      aria-expanded={compPanelOpen}
-                      onClick={() => setCompPanelOpen((v) => !v)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setCompPanelOpen((v) => !v);
-                        }
-                      }}
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: "var(--t2)",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        cursor: "pointer",
-                        userSelect: "none",
-                      }}
-                    >
-                      {compPanelOpen ? (
-                        <ChevronUp size={13} color="var(--t3)" />
-                      ) : (
-                        <ChevronDown size={13} color="var(--t3)" />
-                      )}
-                      <Layers size={13} color="var(--accent-text)" />
-                      成本組件（原料庫・兩平台共用）
-                      <span
-                        style={{
-                          fontFamily: mono,
-                          color: "var(--t3)",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {Object.keys(components).length} 顆・
-                        {compGroups.length} 分類
-                      </span>
-                      {!compPanelOpen && (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            color: "var(--t4)",
-                            fontWeight: 500,
-                            marginLeft: "auto",
-                          }}
-                        >
-                          點擊展開管理
-                        </span>
-                      )}
-                    </div>
-                    {compPanelOpen && (
-                      <>
-                        <div
-                          style={{
-                            fontSize: 10,
-                            color: "var(--t4)",
-                            margin: "6px 0 10px",
-                            lineHeight: 1.6,
-                          }}
-                        >
-                          改這裡一個單價＝所有掛配方的商品自動重算（已鎖定月份不受影響）。商品掛配方：點商品列尾的
-                          <Layers
-                            size={10}
-                            style={{ margin: "0 2px", verticalAlign: "-1px" }}
-                          />
-                          圖示。
-                        </div>
-                        <div style={{ position: "relative", marginBottom: 8 }}>
-                          <Search
-                            size={12}
-                            color="var(--t4)"
-                            style={{
-                              position: "absolute",
-                              left: 10,
-                              top: "50%",
-                              transform: "translateY(-50%)",
-                            }}
-                          />
-                          <input
-                            type="text"
-                            value={compSearch}
-                            placeholder="搜尋組件名稱或分類..."
-                            aria-label="搜尋成本組件"
-                            onChange={(e) => setCompSearch(e.target.value)}
-                            style={{
-                              ...inp,
-                              width: "100%",
-                              maxWidth: 300,
-                              textAlign: "left",
-                              paddingLeft: 30,
-                              borderRadius: 8,
-                              padding: "7px 10px 7px 30px",
-                              fontSize: 12,
-                            }}
-                          />
-                        </div>
-                    <datalist id="comp-cats">
-                      {compCats.map((c) => (
-                        <option key={c} value={c} />
-                      ))}
-                    </datalist>
-                    {compGroups
-                      .map(([cat, list]) => {
-                        const q = dCompSearch.trim().toLowerCase();
-                        const shown = q
-                          ? list.filter(
-                              ([, c]) =>
-                                c.name.toLowerCase().includes(q) ||
-                                (c.cat || "").toLowerCase().includes(q)
-                            )
-                          : list;
-                        return [cat, shown];
-                      })
-                      .filter(([, shown]) => shown.length > 0)
-                      .map(([cat, list]) => {
-                        const catOpen =
-                          !!compCatOpen[cat] || !!dCompSearch.trim();
-                        return (
-                      <div
-                        key={cat}
-                        style={{
-                          border: "1px solid var(--s3)",
-                          borderRadius: 10,
-                          marginBottom: 6,
-                          background: "var(--s1)",
-                          overflow: "hidden",
-                        }}
-                      >
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          aria-expanded={catOpen}
-                          onClick={() =>
-                            setCompCatOpen((p) => ({ ...p, [cat]: !p[cat] }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              setCompCatOpen((p) => ({
-                                ...p,
-                                [cat]: !p[cat],
-                              }));
-                            }
-                          }}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "8px 10px",
-                            cursor: "pointer",
-                            fontSize: 11,
-                            fontWeight: 800,
-                            userSelect: "none",
-                          }}
-                        >
-                          {catOpen ? (
-                            <ChevronUp size={12} color="var(--t3)" />
-                          ) : (
-                            <ChevronDown size={12} color="var(--t3)" />
-                          )}
-                          <span style={{ color: "var(--accent-text)" }}>
-                            {cat}
-                          </span>
-                          <span
-                            style={{
-                              color: "var(--t3)",
-                              fontWeight: 600,
-                              fontFamily: mono,
-                            }}
-                          >
-                            {list.length}
-                          </span>
-                        </div>
-                        {catOpen && (
-                        <div
-                          style={{
-                            display: "flex",
-                            flexWrap: "wrap",
-                            gap: 8,
-                            alignItems: "center",
-                            padding: "0 10px 10px",
-                          }}
-                        >
-                          {list.map(([id, c]) => (
-                            <div
-                              key={id}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 4,
-                                background: "var(--s1)",
-                                border: "1px solid var(--s3)",
-                                borderRadius: 8,
-                                padding: "4px 6px",
-                              }}
-                            >
-                              <input
-                                key={id + "_" + c.name}
-                                defaultValue={c.name}
-                                aria-label="組件名稱"
-                                onBlur={(e) =>
-                                  commitCompField(id, "name", e.target.value)
-                                }
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter")
-                                    e.currentTarget.blur();
-                                }}
-                                style={{
-                                  ...inp,
-                                  width: 110,
-                                  textAlign: "left",
-                                  fontSize: 11,
-                                  padding: "4px 6px",
-                                  fontFamily:
-                                    "'Inter','Noto Sans TC',sans-serif",
-                                }}
-                              />
-                              <FpInput
-                                field={id}
-                                label={`${c.name} 單價`}
-                                value={c.price}
-                                onCommit={(cid, v) =>
-                                  commitCompField(cid, "price", v)
-                                }
-                              />
-                              <input
-                                key={id + "_c_" + (c.cat || "")}
-                                defaultValue={c.cat || ""}
-                                list="comp-cats"
-                                placeholder="分類"
-                                aria-label={`${c.name} 分類`}
-                                onBlur={(e) =>
-                                  commitCompField(id, "cat", e.target.value)
-                                }
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter")
-                                    e.currentTarget.blur();
-                                }}
-                                style={{
-                                  ...inp,
-                                  width: 76,
-                                  textAlign: "left",
-                                  fontSize: 10,
-                                  padding: "4px 6px",
-                                  fontFamily:
-                                    "'Inter','Noto Sans TC',sans-serif",
-                                }}
-                              />
-                              {(compUsage[id] || 0) > 0 && (
-                                <span
-                                  style={{
-                                    fontSize: 9,
-                                    fontFamily: mono,
-                                    color: "var(--t3)",
-                                    fontWeight: 700,
-                                  }}
-                                  title="被幾個配方使用"
-                                >
-                                  ×{compUsage[id]}
-                                </span>
-                              )}
-                              <Btn
-                                v="ghost"
-                                aria-label={`刪除組件 ${c.name}`}
-                                onClick={() => deleteComponent(id)}
-                                style={{ padding: 2 }}
-                              >
-                                <Trash2 size={11} color="var(--t4)" />
-                              </Btn>
-                            </div>
-                          ))}
-                        </div>
-                        )}
-                      </div>
-                        );
-                      })}
-                    <div
-                      style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        alignItems: "center",
-                        gap: 4,
-                        marginTop: compGroups.length ? 4 : 0,
-                      }}
-                    >
-                      <input
-                        value={newComp.name}
-                        placeholder="新組件名稱（例：高山茶 150g）"
-                        aria-label="新組件名稱"
-                        onChange={(e) =>
-                          setNewComp((p) => ({ ...p, name: e.target.value }))
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") addComponent();
-                        }}
-                        style={{
-                          ...inp,
-                          width: 170,
-                          textAlign: "left",
-                          fontSize: 11,
-                          padding: "4px 6px",
-                          fontFamily: "'Inter','Noto Sans TC',sans-serif",
-                        }}
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={newComp.price}
-                        placeholder="單價"
-                        aria-label="新組件單價"
-                        onChange={(e) =>
-                          setNewComp((p) => ({
-                            ...p,
-                            price: e.target.value,
-                          }))
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") addComponent();
-                        }}
-                        style={{ ...inp, width: 72, fontSize: 11 }}
-                      />
-                      <input
-                        value={newComp.cat}
-                        list="comp-cats"
-                        placeholder="分類（例：茶葉）"
-                        aria-label="新組件分類"
-                        onChange={(e) =>
-                          setNewComp((p) => ({ ...p, cat: e.target.value }))
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") addComponent();
-                        }}
-                        style={{
-                          ...inp,
-                          width: 110,
-                          textAlign: "left",
-                          fontSize: 11,
-                          padding: "4px 6px",
-                          fontFamily: "'Inter','Noto Sans TC',sans-serif",
-                        }}
-                      />
-                      <Btn v="primary" onClick={addComponent}>
-                        新增
-                      </Btn>
-                    </div>
-                      </>
-                    )}
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      alignItems: "center",
-                      gap: 10,
-                      marginBottom: 14,
-                    }}
-                  >
-                    <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 360 }}>
-                      <Search
-                        size={14}
-                        color="var(--t4)"
-                        style={{
-                          position: "absolute",
-                          left: 12,
-                          top: "50%",
-                          transform: "translateY(-50%)",
-                        }}
-                      />
-                      <input
-                        type="text"
-                        placeholder="搜尋商品名稱或規格 ..."
-                        aria-label="搜尋商品名稱或規格"
-                        value={mSearch}
-                        onChange={(e) => setMSearch(e.target.value)}
-                        style={{
-                          ...inp,
-                          width: "100%",
-                          textAlign: "left",
-                          paddingLeft: 36,
-                          borderRadius: 10,
-                          padding: "10px 12px 10px 36px",
-                          fontSize: 13,
-                        }}
-                      />
-                    </div>
-                    <label
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: "var(--t3)",
-                        cursor: "pointer",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={cleanupOnly}
-                        onChange={(e) => setCleanupOnly(e.target.checked)}
-                        style={{ accentColor: "var(--wn)" }}
-                      />{" "}
-                      只看可清理（180 天未售/無紀錄）
-                    </label>
-                    <label
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: "var(--t3)",
-                        cursor: "pointer",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={soldOnly}
-                        onChange={(e) => setSoldOnly(e.target.checked)}
-                        style={{ accentColor }}
-                      />{" "}
-                      只顯示本期有銷售
-                    </label>
-                    {cleanupOnly && matrixList.length > 0 && (
-                      <Btn v="danger" onClick={bulkCleanStale}>
-                        <Trash2 size={11} /> 清除清單全部 {matrixList.length} 項
-                      </Btn>
-                    )}
-                  </div>
-                  <div
-                    style={{
-                      overflowX: "auto",
-                      overflowY: "auto",
-                      maxHeight: 480,
-                      border: "1px solid var(--s3)",
-                      borderRadius: 12,
-                    }}
-                  >
-                    <table
-                      style={{
-                        width: "100%",
-                        borderCollapse: "collapse",
-                        minWidth: 760,
-                      }}
-                    >
-                      <thead>
-                        <tr>
-                          <SortTh
-                            sortKey="name"
-                            currentSort={costSort}
-                            onSort={(k) =>
-                              setCostSort((p) => ({
-                                key: k,
-                                dir:
-                                  p.key === k
-                                    ? p.dir === "desc"
-                                      ? "asc"
-                                      : "desc"
-                                    : "desc",
-                              }))
-                            }
-                          >
-                            商品名稱
-                          </SortTh>
-                          <th scope="col" style={{ ...th, textAlign: "left" }}>
-                            規格
-                          </th>
-                          <SortTh
-                            sortKey="soldQty"
-                            currentSort={costSort}
-                            onSort={(k) =>
-                              setCostSort((p) => ({
-                                key: k,
-                                dir:
-                                  p.key === k
-                                    ? p.dir === "desc"
-                                      ? "asc"
-                                      : "desc"
-                                    : "desc",
-                              }))
-                            }
-                            align="right"
-                          >
-                            銷量
-                          </SortTh>
-                          <SortTh
-                            sortKey="profit"
-                            currentSort={costSort}
-                            onSort={(k) =>
-                              setCostSort((p) => ({
-                                key: k,
-                                dir:
-                                  p.key === k
-                                    ? p.dir === "desc"
-                                      ? "asc"
-                                      : "desc"
-                                    : "desc",
-                              }))
-                            }
-                            align="right"
-                          >
-                            淨利貢獻
-                          </SortTh>
-                          <SortTh
-                            sortKey="margin"
-                            currentSort={costSort}
-                            onSort={(k) =>
-                              setCostSort((p) => ({
-                                key: k,
-                                dir:
-                                  p.key === k
-                                    ? p.dir === "desc"
-                                      ? "asc"
-                                      : "desc"
-                                    : "desc",
-                              }))
-                            }
-                            align="right"
-                          >
-                            毛利率
-                          </SortTh>
-                          <SortTh
-                            sortKey="cost"
-                            currentSort={costSort}
-                            onSort={(k) =>
-                              setCostSort((p) => ({
-                                key: k,
-                                dir:
-                                  p.key === k
-                                    ? p.dir === "desc"
-                                      ? "asc"
-                                      : "desc"
-                                    : "desc",
-                              }))
-                            }
-                            align="right"
-                          >
-                            單位成本
-                          </SortTh>
-                          <th
-                            scope="col"
-                            style={{ ...th, textAlign: "center", width: 40 }}
-                          ></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!matrixList.length ? (
-                          <tr>
-                            <td
-                              colSpan={7}
-                              style={{
-                                ...td2,
-                                textAlign: "center",
-                                color: "var(--t4)",
-                                padding: 40,
-                              }}
-                            >
-                              尚無商品數據
-                            </td>
-                          </tr>
-                        ) : (
-                          (() => {
-                            let missFound = false;
-                            return matrixList.map((p) => {
-                              const miss = missCost.keys.has(p.key),
-                                hs = p.soldQty > 0;
-                              const isFirstMiss = miss && !missFound;
-                              if (isFirstMiss) missFound = true;
-                              const profitVal =
-                                p.profitContribution ?? p.estProfit ?? 0;
-                              const gmVal =
-                                p.totalRevenue > 0
-                                  ? (p.totalRevenue - p.totalCost) /
-                                    p.totalRevenue
-                                  : null;
-                              const hasRecipe =
-                                Array.isArray(recipes[p.key]) &&
-                                recipes[p.key].length > 0;
-                              return (
-                                <React.Fragment key={p.key}>
-                                <tr
-                                  ref={isFirstMiss ? firstMissRef : undefined}
-                                  className={miss && hs ? "rw" : ""}
-                                >
-                                  <td
-                                    style={{
-                                      ...td2,
-                                      fontWeight: 600,
-                                      maxWidth: 260,
-                                      overflow: "hidden",
-                                    }}
-                                    title={p.name}
-                                  >
-                                    <div
-                                      style={{
-                                        whiteSpace: "nowrap",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                      }}
-                                    >
-                                      {p.name}
-                                    </div>
-                                    {p.stale && (
-                                      <div
-                                        style={{
-                                          fontSize: 9,
-                                          fontWeight: 700,
-                                          marginTop: 2,
-                                          whiteSpace: "nowrap",
-                                          color: p.neverSold
-                                            ? "var(--t3)"
-                                            : "var(--wn)",
-                                        }}
-                                      >
-                                        {p.neverSold
-                                          ? "無銷售紀錄"
-                                          : `久未售出・最後 ${p.lastSold}（${p.staleDays} 天前）`}
-                                      </div>
-                                    )}
-                                  </td>
-                                  <td
-                                    style={{
-                                      ...td2,
-                                      color: "var(--t3)",
-                                      fontSize: 12,
-                                    }}
-                                  >
-                                    {p.option}
-                                  </td>
-                                  <td
-                                    style={{
-                                      ...td2,
-                                      textAlign: "right",
-                                      fontWeight: 700,
-                                      fontFamily: mono,
-                                    }}
-                                  >
-                                    {p.soldQty}
-                                  </td>
-                                  <td
-                                    style={{
-                                      ...td2,
-                                      textAlign: "right",
-                                      fontWeight: 700,
-                                      fontFamily: mono,
-                                      color:
-                                        profitVal >= 0
-                                          ? "var(--up)"
-                                          : "var(--dn)",
-                                    }}
-                                  >
-                                    {fmt$(profitVal)}
-                                  </td>
-                                  <td
-                                    style={{
-                                      ...td2,
-                                      textAlign: "right",
-                                      fontWeight: 600,
-                                      fontFamily: mono,
-                                      color:
-                                        gmVal === null
-                                          ? "var(--t4)"
-                                          : gmVal < 0
-                                          ? "var(--dn)"
-                                          : gmVal < 0.35
-                                          ? "var(--wn)"
-                                          : "var(--t1)",
-                                    }}
-                                  >
-                                    {gmVal === null
-                                      ? "—"
-                                      : `${(gmVal * 100).toFixed(1)}%`}
-                                  </td>
-                                  <td style={{ ...td2, textAlign: "right" }}>
-                                    <div
-                                      style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "flex-end",
-                                        gap: 4,
-                                      }}
-                                    >
-                                      {miss && hs && !hasRecipe && (
-                                        <span
-                                          style={{
-                                            fontSize: 10,
-                                            color: "var(--wn)",
-                                            fontWeight: 700,
-                                          }}
-                                        >
-                                          —
-                                        </span>
-                                      )}
-                                      {hasRecipe ? (
-                                        <span
-                                          role="button"
-                                          tabIndex={0}
-                                          title="配方計算值——點擊編輯配方"
-                                          onClick={() =>
-                                            setRecipeEditKey(
-                                              recipeEditKey === p.key
-                                                ? null
-                                                : p.key
-                                            )
-                                          }
-                                          onKeyDown={(e) => {
-                                            if (
-                                              e.key === "Enter" ||
-                                              e.key === " "
-                                            ) {
-                                              e.preventDefault();
-                                              setRecipeEditKey(
-                                                recipeEditKey === p.key
-                                                  ? null
-                                                  : p.key
-                                              );
-                                            }
-                                          }}
-                                          style={{
-                                            fontFamily: mono,
-                                            fontWeight: 700,
-                                            fontSize: 13,
-                                            color: "var(--accent-text)",
-                                            cursor: "pointer",
-                                            whiteSpace: "nowrap",
-                                          }}
-                                        >
-                                          {fmt$d(costsEff[p.key])}
-                                          <span
-                                            style={{
-                                              fontSize: 9,
-                                              marginLeft: 4,
-                                              color: "var(--t3)",
-                                              fontWeight: 600,
-                                            }}
-                                          >
-                                            配方
-                                          </span>
-                                        </span>
-                                      ) : (
-                                        <CostInput
-                                          costKey={p.key}
-                                          label={`${p.name} ${
-                                            p.option || ""
-                                          } 單位成本`}
-                                          value={costs[p.key]}
-                                          miss={miss}
-                                          onCommit={commitCost}
-                                        />
-                                      )}
-                                    </div>
-                                  </td>
-                                  <td style={{ ...td2, textAlign: "center" }}>
-                                    <div
-                                      style={{
-                                        display: "flex",
-                                        gap: 2,
-                                        justifyContent: "center",
-                                      }}
-                                    >
-                                      <Btn
-                                        v="ghost"
-                                        aria-label={`編輯 ${p.name} 的配方`}
-                                        title="配方（組件×用量）"
-                                        onClick={() =>
-                                          setRecipeEditKey(
-                                            recipeEditKey === p.key
-                                              ? null
-                                              : p.key
-                                          )
-                                        }
-                                        style={{ padding: "2px" }}
-                                      >
-                                        <Layers
-                                          size={12}
-                                          color={
-                                            hasRecipe
-                                              ? "var(--accent-text)"
-                                              : "var(--t4)"
-                                          }
-                                        />
-                                      </Btn>
-                                      <Btn
-                                        v="ghost"
-                                        aria-label={`刪除 ${p.name} 的成本設定`}
-                                        onClick={() =>
-                                          setConfirmBox({
-                                            title: "刪除成本設定",
-                                            message: `確定刪除「${p.name}${
-                                              p.option &&
-                                              p.option !== "標準規格"
-                                                ? `（${p.option}）`
-                                                : ""
-                                            }」的手填單位成本？${
-                                              hasRecipe
-                                                ? "\n（此商品掛有配方，配方不受影響、仍以配方計算）"
-                                                : ""
-                                            }`,
-                                            danger: true,
-                                            onOk: () => {
-                                              const n = { ...costs };
-                                              delete n[p.key];
-                                              setCosts(n);
-                                            },
-                                          })
-                                        }
-                                        style={{ padding: "2px" }}
-                                      >
-                                        <Trash2 size={12} color="var(--t4)" />
-                                      </Btn>
-                                    </div>
-                                  </td>
-                                </tr>
-                                {recipeEditKey === p.key && (
-                                  <tr>
-                                    <td
-                                      colSpan={7}
-                                      style={{
-                                        ...td2,
-                                        background: "var(--s2)",
-                                        padding: "14px 18px",
-                                      }}
-                                    >
-                                      <div
-                                        style={{
-                                          fontSize: 12,
-                                          fontWeight: 700,
-                                          color: "var(--t1)",
-                                          marginBottom: 8,
-                                        }}
-                                      >
-                                        配方：{p.name}
-                                        {p.option && p.option !== "標準規格"
-                                          ? `（${p.option}）`
-                                          : ""}
-                                        <span
-                                          style={{
-                                            color: "var(--t3)",
-                                            fontWeight: 500,
-                                            marginLeft: 8,
-                                            fontSize: 11,
-                                          }}
-                                        >
-                                          單位成本＝各組件單價×用量加總
-                                        </span>
-                                      </div>
-                                      {(recipes[p.key] || []).map((l, li) => {
-                                        const comp = components[l.compId];
-                                        return (
-                                          <div
-                                            key={li}
-                                            style={{
-                                              display: "flex",
-                                              alignItems: "center",
-                                              gap: 8,
-                                              padding: "3px 0",
-                                              fontSize: 12,
-                                            }}
-                                          >
-                                            <span
-                                              style={{
-                                                minWidth: 150,
-                                                color: comp
-                                                  ? "var(--t1)"
-                                                  : "var(--dn)",
-                                                fontWeight: 600,
-                                              }}
-                                            >
-                                              {comp
-                                                ? comp.name
-                                                : "（組件已刪除，成本以 0 計）"}
-                                            </span>
-                                            <span
-                                              style={{
-                                                color: "var(--t4)",
-                                                fontSize: 11,
-                                              }}
-                                            >
-                                              ×
-                                            </span>
-                                            <FpInput
-                                              field={li}
-                                              label="用量"
-                                              value={l.qty}
-                                              onCommit={(idx, v) =>
-                                                setRecipeLine(p.key, idx, {
-                                                  qty: Number(v) || 0,
-                                                })
-                                              }
-                                            />
-                                            <span
-                                              style={{
-                                                fontFamily: mono,
-                                                color: "var(--t2)",
-                                                fontSize: 11,
-                                                minWidth: 88,
-                                                textAlign: "right",
-                                              }}
-                                            >
-                                              ={" "}
-                                              {fmt$d(
-                                                (Number(comp?.price) || 0) *
-                                                  (Number(l.qty) || 0)
-                                              )}
-                                            </span>
-                                            <Btn
-                                              v="ghost"
-                                              aria-label="移除此組件"
-                                              onClick={() =>
-                                                setRecipeLine(p.key, li, null)
-                                              }
-                                              style={{ padding: 2 }}
-                                            >
-                                              <X
-                                                size={12}
-                                                color="var(--t4)"
-                                              />
-                                            </Btn>
-                                          </div>
-                                        );
-                                      })}
-                                      <div
-                                        style={{
-                                          display: "flex",
-                                          alignItems: "center",
-                                          gap: 8,
-                                          marginTop: 8,
-                                          flexWrap: "wrap",
-                                        }}
-                                      >
-                                        <CompPicker
-                                          compGroups={compGroups}
-                                          onPick={(id) =>
-                                            addRecipeLine(p.key, id)
-                                          }
-                                        />
-                                        <span
-                                          style={{
-                                            fontFamily: mono,
-                                            fontWeight: 800,
-                                            fontSize: 13,
-                                            color: "var(--accent-text)",
-                                            marginLeft: "auto",
-                                          }}
-                                        >
-                                          合計{" "}
-                                          {fmt$d(
-                                            recipeCost(
-                                              recipes[p.key],
-                                              components
-                                            )
-                                          )}
-                                        </span>
-                                        {(recipes[p.key] || []).length > 0 && (
-                                          <Btn
-                                            v="danger"
-                                            onClick={() =>
-                                              removeRecipe(p.key)
-                                            }
-                                            style={{ fontSize: 10 }}
-                                          >
-                                            移除配方
-                                          </Btn>
-                                        )}
-                                        <Btn
-                                          onClick={() =>
-                                            setRecipeEditKey(null)
-                                          }
-                                          style={{ fontSize: 10 }}
-                                        >
-                                          完成
-                                        </Btn>
-                                      </div>
-                                      {Object.keys(components).length ===
-                                        0 && (
-                                        <div
-                                          style={{
-                                            fontSize: 11,
-                                            color: "var(--wn)",
-                                            marginTop: 6,
-                                          }}
-                                        >
-                                          原料庫還沒有組件——先在上方「成本組件」新增（例：高山茶
-                                          150g、茶包袋、禮盒A、提袋）
-                                        </div>
-                                      )}
-                                    </td>
-                                  </tr>
-                                )}
-                                </React.Fragment>
-                              );
-                            });
-                          })()
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                {/* ── Cost Matrix（共用卡） ── */}
+                {costMatrixCard}
 
                 {/* ── Order Table ── */}
                 <div
