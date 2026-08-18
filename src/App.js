@@ -920,8 +920,8 @@ const PosKpi = ({ label, value, sub, color }) => (
 );
 function POSDashboard({
   data,
-  excluded,
-  onSetExcluded,
+  included,
+  onSetIncluded,
   accentColor,
   accentDim,
   accentBdr,
@@ -944,6 +944,12 @@ function POSDashboard({
   const [showAll, setShowAll] = useState(false);
   const [openId, setOpenId] = useState(null);
   const PAGE = 60;
+  const allKeys = data.channels.map((c) => c.key);
+  const excludedKeys = allKeys.filter((k) => !included.includes(k));
+  const scopeLabel = data.channels
+    .filter((c) => !c.excluded)
+    .map((c) => c.label)
+    .join("＋");
   const netColor =
     s.netMargin >= 0.15
       ? "var(--up)"
@@ -1041,8 +1047,8 @@ function POSDashboard({
           <b style={{ color: "var(--wn)" }}>本期沒有門市訂單。</b>{" "}
           {s.rawTotal > 0
             ? "本期只有取消／測試單。"
-            : excluded.length
-            ? "所有通路都被取消勾選了——到下方通路拆解重新勾選。"
+            : data.channels.length && !data.channels.some((c) => !c.excluded)
+            ? "本期沒有現場零售單、其他通路又未勾選計入——到下方通路拆解勾選。"
             : "可能還沒匯入這個月份的兩份報表，或期間選錯了。"}
         </div>
       )}
@@ -1093,50 +1099,51 @@ function POSDashboard({
         </div>
       </div>
 
-      {/* KPI */}
+      {/* KPI：三張卡，％為主、金額為輔（老闆 2026-08-18：主要看毛利率／淨利率）
+          成本覆蓋率降為毛利率卡的副標（<90% 才變色提醒），開票比例併進淨利率卡副標 */}
       <div
         className="f0"
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))",
           gap: 12,
         }}
       >
         <PosKpi
-          label="門市營收"
+          label={`門市營收（${scopeLabel || "無通路"}）`}
           value={fmt$(s.rev)}
           sub={`${s.valid} 筆 ｜ 客單 ${fmt$(s.aov)}`}
         />
         <PosKpi
-          label="毛利（無平台抽成）"
-          value={fmt$(s.coveredGp)}
-          sub={`毛利率 ${pct(s.grossMargin)}${
-            s.noCostCount ? "（僅計成本齊全的單）" : ""
-          }`}
-          color="var(--t1)"
-        />
-        <PosKpi
-          label="稅後淨利"
-          value={fmt$(s.coveredNet)}
-          sub={`淨利率 ${pct(s.netMargin)}｜營業費 ${opExpense}%`}
-          color={netColor}
-        />
-        <PosKpi
-          label="成本覆蓋率"
-          value={s.rev > 0 ? pct(s.costCoverage) : "—"}
+          label="毛利率（無平台抽成）"
+          value={s.coveredRev > 0 ? pct(s.grossMargin) : "—"}
           sub={
-            s.valid === 0
-              ? "本期無訂單"
-              : s.noCostCount
-              ? `${s.noCostCount} 筆無成本（品項未選正規／缺明細）`
-              : "全部訂單都算得出成本"
+            <>
+              毛利 {fmt$(s.coveredGp)}
+              {s.rev > 0 && s.costCoverage < 0.999 && (
+                <>
+                  {" ｜ 成本覆蓋 "}
+                  <b style={{ color: covColor }}>{pct(s.costCoverage)}</b>
+                  {`（${s.noCostCount} 筆算不出成本）`}
+                </>
+              )}
+            </>
           }
-          color={s.rev > 0 ? covColor : "var(--t4)"}
+          color={
+            s.grossMargin >= 0.5
+              ? "var(--up)"
+              : s.grossMargin >= 0.4
+              ? "var(--wn)"
+              : "var(--dn)"
+          }
         />
         <PosKpi
-          label="開票比例"
-          value={s.rev > 0 ? pct(s.invoiceRate) : "—"}
-          sub={`課稅 ${taxRate}%｜未開票不課`}
+          label="稅後淨利率"
+          value={s.coveredRev > 0 ? pct(s.netMargin) : "—"}
+          sub={`淨利 ${fmt$(s.coveredNet)} ｜ 營業費 ${opExpense}%・稅 ${taxRate}%（開票 ${
+            s.rev > 0 ? pct(s.invoiceRate) : "—"
+          } 才課）`}
+          color={netColor}
         />
       </div>
 
@@ -1163,22 +1170,16 @@ function POSDashboard({
             }}
           >
             <span style={{ fontSize: 10, color: "var(--t4)" }}>
-              取消勾選＝不計入上方 KPI 與商品表
+              勾選＝計入上方 KPI 與商品表（預設只算現場零售）
             </span>
-            {excluded.length > 0 && (
-              <Btn onClick={() => onSetExcluded([])} style={{ fontSize: 10 }}>
+            {excludedKeys.length > 0 && (
+              <Btn onClick={() => onSetIncluded(allKeys)} style={{ fontSize: 10 }}>
                 全部計入
               </Btn>
             )}
-            {data.channels.length > 1 && (
+            {excludedKeys.length < allKeys.length - 1 && (
               <Btn
-                onClick={() =>
-                  onSetExcluded(
-                    data.channels
-                      .filter((c) => c.key !== "retail")
-                      .map((c) => c.key)
-                  )
-                }
+                onClick={() => onSetIncluded(["retail"])}
                 style={{ fontSize: 10 }}
               >
                 只看現場零售
@@ -1224,10 +1225,10 @@ function POSDashboard({
                         checked={!c.excluded}
                         aria-label={`把${c.label}計入 KPI`}
                         onChange={(e) =>
-                          onSetExcluded(
+                          onSetIncluded(
                             e.target.checked
-                              ? excluded.filter((k) => k !== c.key)
-                              : [...excluded, c.key]
+                              ? [...included, c.key]
+                              : included.filter((k) => k !== c.key)
                           )
                         }
                         style={{ accentColor, cursor: "pointer" }}
@@ -3739,8 +3740,10 @@ function ProfitCenter() {
   const [posRecipes, setPosRecipes] = useState(() => gl(SK.posRecipes, {}));
   /* 門市匯入：兩份 xls 分次拖入，先進暫存區、湊齊再 join */
   const posStage = useRef({ trans: null, orders: null });
-  /* 門市通路過濾：被排除的通路仍會顯示在表上（數字照算），但不計入總計 KPI */
-  const [posExcluded, setPosExcluded] = useState([]);
+  /* 門市通路過濾：KPI 預設只算「現場零售」（老闆 2026-08-18 定）；
+     其他通路（經銷／電話／Omnichat…）仍顯示在通路表上、數字照算，勾了才計入 KPI。
+     用「計入清單」而非「排除清單」：之後新出現的通路自動不計入，不會偷偷灌進零售 KPI */
+  const [posIncluded, setPosIncluded] = useState(["retail"]);
 
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
@@ -5122,7 +5125,7 @@ function ProfitCenter() {
         return;
       }
       const ch = byChannel[order.channel] || byChannel.retail;
-      const excluded = posExcluded.includes(order.channel);
+      const excluded = !posIncluded.includes(order.channel);
       /* 通路層一律照算（表上看得到）；總計 KPI／商品表只加未被排除的通路 */
       ch.rev += fin.gross;
       ch.cost += fin.oCost;
@@ -5208,7 +5211,7 @@ function ProfitCenter() {
       matrixList: Object.values(mm).sort((a, b) => b.soldQty - a.soldQty),
       channels: POS_CHANNELS.map((c) => byChannel[c.key])
         .filter((c) => c.rev > 0 || c.orders > 0)
-        .map((c) => ({ ...c, excluded: posExcluded.includes(c.key) })),
+        .map((c) => ({ ...c, excluded: !posIncluded.includes(c.key) })),
       summary: {
         ...t,
         /* 毛利／淨利率一律用「成本齊全」的訂單當基數 */
@@ -5219,7 +5222,7 @@ function ProfitCenter() {
         invoiceRate: t.rev > 0 ? t.invoiceRev / t.rev : 0,
       },
     };
-  }, [posOrders, posEffCosts, slFp, inPeriod, posExcluded]);
+  }, [posOrders, posEffCosts, slFp, inPeriod, posIncluded]);
 
   const slData = useMemo(() => {
     const all = Object.values(slOrders);
@@ -8064,8 +8067,8 @@ function ProfitCenter() {
               <>
                 <POSDashboard
                   data={posData}
-                  excluded={posExcluded}
-                  onSetExcluded={setPosExcluded}
+                  included={posIncluded}
+                  onSetIncluded={setPosIncluded}
                   accentColor={accentColor}
                   accentDim={accentDim}
                   accentBdr={accentBdr}
