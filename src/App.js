@@ -947,15 +947,22 @@ function POSDashboard({
   monthly,
   sY,
   sM,
+  periodLabel,
 }) {
   const s = data.summary;
   const pct = (v) => `${(v * 100).toFixed(1)}%`;
   const gapVal = s.netMargin - POS_NET_FLOOR;
   const [q, setQ] = useState("");
   const dq = useDebounced(q);
-  const [showAll, setShowAll] = useState(false);
   const [openId, setOpenId] = useState(null);
-  const PAGE = 60;
+  const [lossOnly, setLossOnly] = useState(false);
+  const [sort, setSort] = useState({ key: "date", dir: "desc" });
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  useEffect(() => {
+    setPage(0);
+    setOpenId(null);
+  }, [dq, lossOnly, sort, sY, sM]);
   const allKeys = data.channels.map((c) => c.key);
   const excludedKeys = allKeys.filter((k) => !included.includes(k));
   const scopeLabel = data.channels
@@ -974,7 +981,7 @@ function POSDashboard({
       : s.costCoverage >= 0.6
       ? "var(--wn)"
       : "var(--dn)";
-  const th = {
+  const cth = {
     padding: "9px 10px",
     fontSize: 10,
     fontWeight: 700,
@@ -983,7 +990,7 @@ function POSDashboard({
     borderBottom: "1px solid var(--s3)",
     whiteSpace: "nowrap",
   };
-  const td = {
+  const ctd = {
     padding: "9px 10px",
     fontSize: 12,
     fontFamily: mono,
@@ -992,7 +999,7 @@ function POSDashboard({
     color: "var(--t2)",
     whiteSpace: "nowrap",
   };
-  const tdL = { ...td, textAlign: "left", fontFamily: "inherit" };
+  const ctdL = { ...ctd, textAlign: "left", fontFamily: "inherit" };
   /* 通路合計（只算勾選中的通路，與 KPI 同口徑） */
   const chTotal = data.channels
     .filter((c) => !c.excluded)
@@ -1014,32 +1021,125 @@ function POSDashboard({
         invoiceRev: 0,
       }
     );
-  const orders = data.orderList.filter((o) => {
-    if (!dq) return true;
-    const t = dq.toLowerCase();
-    return (
-      String(o.orderId).toLowerCase().includes(t) ||
-      String(o.remark || "").toLowerCase().includes(t) ||
-      String(o.channelLabel || "").toLowerCase().includes(t) ||
-      String(o.payMethod || "").toLowerCase().includes(t) ||
-      (o.items || []).some((i) =>
-        `${i.name} ${i.option || ""}`.toLowerCase().includes(t)
-      )
+  /* 訂單表：搜尋／只看虧損／排序／分頁（與官網蝦皮同一套操作） */
+  const filtered = data.orderList
+    .filter((o) => !lossOnly || (!o.missCost && o.net < 0))
+    .filter((o) => {
+      if (!dq) return true;
+      const t = dq.toLowerCase();
+      return (
+        String(o.orderId).toLowerCase().includes(t) ||
+        String(o.remark || "").toLowerCase().includes(t) ||
+        String(o.channelLabel || "").toLowerCase().includes(t) ||
+        String(o.payMethod || "").toLowerCase().includes(t) ||
+        (o.items || []).some((i) =>
+          `${i.name} ${i.option || ""}`.toLowerCase().includes(t)
+        )
+      );
+    })
+    .sort((a, b) => {
+      const m = sort.dir === "desc" ? -1 : 1;
+      const k = sort.key;
+      if (k === "date")
+        return (
+          m *
+          (String(a.date).localeCompare(String(b.date)) ||
+            String(a.orderId).localeCompare(String(b.orderId)))
+        );
+      /* 缺成本的單沒有毛利／淨利，排序時一律沉底 */
+      const va = k === "revenue" ? a.revenue : a.missCost ? -Infinity : a[k === "cost" ? "oCost" : k];
+      const vb = k === "revenue" ? b.revenue : b.missCost ? -Infinity : b[k === "cost" ? "oCost" : k];
+      return m * ((va || 0) - (vb || 0));
+    });
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const curPage = Math.min(page, totalPages - 1);
+  const paged = filtered.slice(curPage * pageSize, (curPage + 1) * pageSize);
+  const lossAll = data.orderList.filter((o) => !o.missCost && o.net < 0).length;
+  const noCostAll = data.orderList.filter((o) => o.missCost).length;
+  const onSort = (k) =>
+    setSort((p) => ({
+      key: k,
+      dir: p.key === k ? (p.dir === "desc" ? "asc" : "desc") : "desc",
+    }));
+  /* 匯出 CSV：彙總（全期間）＋明細（套用目前篩選），與官網同格式與公式注入防護 */
+  const exportCsv = () => {
+    const esc = (v0) => {
+      let v = String(v0 ?? "");
+      if (/^[=@+\-]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v)) v = "'" + v;
+      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    };
+    const r0 = Math.round;
+    const rows = [
+      ["平台", "門市"],
+      ["期間", periodLabel],
+      ["計入通路", scopeLabel],
+      ["有效訂單", s.valid],
+      ["營收", r0(s.rev)],
+      ["成本齊全訂單營收", r0(s.coveredRev)],
+      ["商品成本", r0(s.cost)],
+      ["毛利（成本齊全單）", r0(s.coveredGp)],
+      ["營業費（成本齊全單）", r0(s.coveredOp)],
+      ["稅賦（成本齊全單・只課開票）", r0(s.coveredTax)],
+      ["最終淨利（成本齊全單）", r0(s.coveredNet)],
+      ["毛利率", (s.grossMargin * 100).toFixed(2) + "%"],
+      ["淨利率", (s.netMargin * 100).toFixed(2) + "%"],
+      ["成本覆蓋率", (s.costCoverage * 100).toFixed(1) + "%"],
+      ["開票比例", (s.invoiceRate * 100).toFixed(1) + "%"],
+      ["平均客單價", r0(s.aov)],
+      [],
+    ];
+    const bits = [];
+    if (lossOnly) bits.push("僅虧損單");
+    if (dq) bits.push(`搜尋「${dq}」`);
+    rows.push([
+      "明細範圍",
+      bits.length
+        ? `${bits.join("、")}，共 ${filtered.length} 筆（上方彙總仍為全期間）`
+        : `全期間共 ${filtered.length} 筆`,
+    ]);
+    rows.push([
+      "日期",
+      "單號",
+      "通路",
+      "付款方式",
+      "備註",
+      "狀態",
+      "營收",
+      "商品成本",
+      "毛利",
+      "營業費",
+      "稅賦",
+      "單筆淨利",
+      "發票",
+      "商品",
+    ]);
+    filtered.forEach((o) =>
+      rows.push([
+        o.date,
+        o.orderId,
+        o.channelLabel,
+        o.payMethod,
+        o.remark,
+        o.status,
+        r0(o.revenue),
+        o.missCost ? "缺" : r0(o.oCost),
+        o.missCost ? "" : r0(o.gp),
+        r0(o.opx),
+        r0(o.taxAmt),
+        o.missCost ? "" : r0(o.net),
+        o.hasInvoice ? "已開" : "",
+        (o.items || [])
+          .map((i) => `${i.name}${i.option ? `（${i.option}）` : ""}×${i.qty}`)
+          .join("；"),
+      ])
     );
-  });
-  const shown = showAll ? orders : orders.slice(0, PAGE);
-  const recipeOf = (key) => {
-    const lines = recipes?.[key];
-    if (!lines || !lines.length) return null;
-    return lines
-      .map(
-        (l) => `${components?.[l.compId]?.name || "（組件已刪）"}×${l.qty}`
-      )
-      .join("＋");
+    const csv = "﻿" + rows.map((r) => r.map(esc).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = `門市損益報表_${periodLabel}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
-  const cell = (extra) => ({ ...td, padding: "4px 8px", ...extra });
-  const cellL = (extra) => ({ ...tdL, padding: "4px 8px", ...extra });
-  const subTh = (extra) => ({ ...th, padding: "4px 8px", ...extra });
   return (
     <>
       {/* 本期零筆：分辨「沒匯報表」與「真的沒生意」，避免一排 0 被誤讀 */}
@@ -1164,6 +1264,11 @@ function POSDashboard({
             <div style={{ fontSize: 12, color: "var(--t3)", marginTop: 8 }}>
               營收：{fmt$(s.rev)}（{scopeLabel || "—"}） ｜ {s.valid} 筆 ｜ 客單{" "}
               {fmt$(s.aov)}
+              {s.coveredRev > 0
+                ? ` ｜ 單筆平均淨利 ${fmt$(
+                    s.coveredNet / Math.max(1, s.valid - s.noCostCount)
+                  )}`
+                : ""}
               {s.cancelledTotal > 0 ? ` ｜ 取消：${fmt$(s.cancelledTotal)}` : ""}
             </div>
             <PeriodCompare monthly={monthly} sY={sY} sM={sM} />
@@ -1374,16 +1479,16 @@ function POSDashboard({
           >
             <thead>
               <tr>
-                <th style={{ ...th, textAlign: "left", width: 30 }}></th>
-                <th style={{ ...th, textAlign: "left" }}>通路</th>
-                <th style={th}>營收</th>
-                <th style={th}>佔比</th>
-                <th style={th}>筆數</th>
-                <th style={th}>客單</th>
-                <th style={th}>毛利率</th>
-                <th style={th}>淨利率</th>
-                <th style={th}>成本覆蓋</th>
-                <th style={th}>開票</th>
+                <th style={{ ...cth, textAlign: "left", width: 30 }}></th>
+                <th style={{ ...cth, textAlign: "left" }}>通路</th>
+                <th style={cth}>營收</th>
+                <th style={cth}>佔比</th>
+                <th style={cth}>筆數</th>
+                <th style={cth}>客單</th>
+                <th style={cth}>毛利率</th>
+                <th style={cth}>淨利率</th>
+                <th style={cth}>成本覆蓋</th>
+                <th style={cth}>開票</th>
               </tr>
             </thead>
             <tbody>
@@ -1400,7 +1505,7 @@ function POSDashboard({
                       opacity: c.excluded ? 0.4 : 1,
                     }}
                   >
-                    <td style={{ ...td, textAlign: "left", padding: "9px 4px" }}>
+                    <td style={{ ...ctd, textAlign: "left", padding: "9px 4px" }}>
                       <input
                         type="checkbox"
                         checked={!c.excluded}
@@ -1415,7 +1520,7 @@ function POSDashboard({
                         style={{ accentColor, cursor: "pointer" }}
                       />
                     </td>
-                    <td style={{ ...tdL, fontWeight: 700, color: "var(--t1)" }}>
+                    <td style={{ ...ctdL, fontWeight: 700, color: "var(--t1)" }}>
                       {c.label}
                       {isDealer && (
                         <span
@@ -1432,19 +1537,19 @@ function POSDashboard({
                         </span>
                       )}
                     </td>
-                    <td style={td}>{fmt$(c.rev)}</td>
-                    <td style={td}>
+                    <td style={ctd}>{fmt$(c.rev)}</td>
+                    <td style={ctd}>
                       {chTotal.rev > 0 && !c.excluded
                         ? pct(c.rev / chTotal.rev)
                         : "—"}
                     </td>
-                    <td style={td}>{c.orders}</td>
-                    <td style={td}>
+                    <td style={ctd}>{c.orders}</td>
+                    <td style={ctd}>
                       {c.orders > 0 ? fmt$(c.rev / c.orders) : "—"}
                     </td>
                     <td
                       style={{
-                        ...td,
+                        ...ctd,
                         color:
                           gm >= 0.45
                             ? "var(--up)"
@@ -1458,7 +1563,7 @@ function POSDashboard({
                     </td>
                     <td
                       style={{
-                        ...td,
+                        ...ctd,
                         color:
                           nm >= 0.1
                             ? "var(--up)"
@@ -1472,13 +1577,13 @@ function POSDashboard({
                     </td>
                     <td
                       style={{
-                        ...td,
+                        ...ctd,
                         color: cov >= 0.9 ? "var(--t2)" : "var(--wn)",
                       }}
                     >
                       {c.rev > 0 ? pct(cov) : "—"}
                     </td>
-                    <td style={td}>
+                    <td style={ctd}>
                       {c.rev > 0 ? pct(c.invoiceRev / c.rev) : "—"}
                     </td>
                   </tr>
@@ -1486,36 +1591,36 @@ function POSDashboard({
               })}
               {data.channels.length > 1 && (
                 <tr>
-                  <td style={td}></td>
-                  <td style={{ ...tdL, fontWeight: 700, color: "var(--t3)" }}>
+                  <td style={ctd}></td>
+                  <td style={{ ...ctdL, fontWeight: 700, color: "var(--t3)" }}>
                     合計（勾選中）
                   </td>
-                  <td style={{ ...td, fontWeight: 700 }}>
+                  <td style={{ ...ctd, fontWeight: 700 }}>
                     {fmt$(chTotal.rev)}
                   </td>
-                  <td style={td}>100%</td>
-                  <td style={td}>{chTotal.orders}</td>
-                  <td style={td}>
+                  <td style={ctd}>100%</td>
+                  <td style={ctd}>{chTotal.orders}</td>
+                  <td style={ctd}>
                     {chTotal.orders > 0
                       ? fmt$(chTotal.rev / chTotal.orders)
                       : "—"}
                   </td>
-                  <td style={{ ...td, fontWeight: 700 }}>
+                  <td style={{ ...ctd, fontWeight: 700 }}>
                     {chTotal.coveredRev > 0
                       ? pct(chTotal.coveredGp / chTotal.coveredRev)
                       : "—"}
                   </td>
-                  <td style={{ ...td, fontWeight: 700 }}>
+                  <td style={{ ...ctd, fontWeight: 700 }}>
                     {chTotal.coveredRev > 0
                       ? pct(chTotal.coveredNet / chTotal.coveredRev)
                       : "—"}
                   </td>
-                  <td style={td}>
+                  <td style={ctd}>
                     {chTotal.rev > 0
                       ? pct(chTotal.coveredRev / chTotal.rev)
                       : "—"}
                   </td>
-                  <td style={td}>
+                  <td style={ctd}>
                     {chTotal.rev > 0
                       ? pct(chTotal.invoiceRev / chTotal.rev)
                       : "—"}
@@ -1553,314 +1658,391 @@ function POSDashboard({
         )}
       </div>
 
-      {/* 訂單 */}
-      <div className="f0" style={posCard}>
+      {/* ── 單筆訂單決策明細（版型同官網／蝦皮：標題＋虧損數、匯出、搜尋、只看虧損、可排序、展開、分頁） ── */}
+      <div className="f5" style={posCard}>
         <div
           style={{
             display: "flex",
             flexWrap: "wrap",
+            justifyContent: "space-between",
+            gap: 12,
             alignItems: "center",
-            gap: 10,
-            marginBottom: 12,
+            marginBottom: 14,
           }}
         >
-          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--t1)" }}>
-            訂單明細（{orders.length}
-            {dq && orders.length !== data.orderList.length
-              ? ` / ${data.orderList.length}`
-              : ""}{" "}
-            筆）
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <BarChart3 size={16} color="var(--t3)" />
+            <span style={{ fontSize: 14, fontWeight: 700 }}>單筆訂單決策明細</span>
+            <span style={{ fontSize: 11, color: "var(--dn)" }}>
+              虧損 {lossAll} 筆
+            </span>
+            {noCostAll > 0 && (
+              <span style={{ fontSize: 11, color: "var(--wn)" }}>
+                缺成本 {noCostAll} 筆
+              </span>
+            )}
+            {excludedKeys.length > 0 && (
+              <span style={{ fontSize: 10, color: "var(--t4)" }}>
+                （含未計入 KPI 的通路，灰色顯示）
+              </span>
+            )}
           </div>
-          <div
-            style={{ position: "relative", flex: "1 1 220px", maxWidth: 340 }}
-          >
-            <Search
-              size={13}
-              color="var(--t4)"
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn onClick={exportCsv}>
+              <Download size={12} /> 匯出報表
+            </Btn>
+            <div style={{ position: "relative" }}>
+              <Search
+                size={13}
+                color="var(--t4)"
+                style={{
+                  position: "absolute",
+                  left: 10,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                }}
+              />
+              <input
+                type="text"
+                placeholder="搜尋單號／備註／商品..."
+                aria-label="搜尋門市訂單"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                style={{
+                  ...inp,
+                  width: 200,
+                  textAlign: "left",
+                  paddingLeft: 30,
+                  borderRadius: 10,
+                  padding: "7px 12px 7px 30px",
+                  fontSize: 12,
+                }}
+              />
+            </div>
+            <label
               style={{
-                position: "absolute",
-                left: 10,
-                top: "50%",
-                transform: "translateY(-50%)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--t3)",
+                cursor: "pointer",
               }}
-            />
-            <input
-              type="text"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="搜尋單號／備註／通路／付款方式／商品…"
-              aria-label="搜尋門市訂單"
-              style={{
-                width: "100%",
-                padding: "7px 10px 7px 30px",
-                borderRadius: 8,
-                border: "1px solid var(--s3)",
-                background: "var(--s2)",
-                color: "var(--t1)",
-                fontSize: 12,
-              }}
-            />
+            >
+              <input
+                type="checkbox"
+                checked={lossOnly}
+                onChange={(e) => setLossOnly(e.target.checked)}
+                style={{ accentColor: "var(--dn)" }}
+              />{" "}
+              只看虧損（本期）
+            </label>
           </div>
-          <span
-            style={{ fontSize: 10, color: "var(--t4)", marginLeft: "auto" }}
-          >
-            點一列展開商品與成本明細
-          </span>
         </div>
-        <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto" }}>
-          <table
-            style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}
-          >
+        <div
+          style={{
+            overflowX: "auto",
+            overflowY: "auto",
+            maxHeight: 500,
+            border: "1px solid var(--s3)",
+            borderRadius: 12,
+          }}
+        >
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead>
               <tr>
-                <th style={{ ...th, textAlign: "left" }}>日期</th>
-                <th style={{ ...th, textAlign: "left" }}>通路</th>
-                <th style={{ ...th, textAlign: "left" }}>付款方式</th>
-                <th style={{ ...th, textAlign: "left" }}>備註</th>
-                <th style={th}>營收</th>
-                <th style={th}>成本</th>
-                <th style={th}>毛利率</th>
-                <th style={th}>淨利</th>
-                <th style={th}>發票</th>
+                <SortTh sortKey="date" currentSort={sort} onSort={onSort}>
+                  單號
+                </SortTh>
+                <th scope="col" style={{ ...th, textAlign: "left" }}>
+                  通路
+                </th>
+                <th scope="col" style={{ ...th, textAlign: "left" }}>
+                  商品
+                </th>
+                <th scope="col" style={{ ...th, textAlign: "left" }}>
+                  備註
+                </th>
+                <SortTh sortKey="revenue" currentSort={sort} onSort={onSort} align="right">
+                  營收
+                </SortTh>
+                <SortTh sortKey="cost" currentSort={sort} onSort={onSort} align="right">
+                  成本
+                </SortTh>
+                <SortTh sortKey="gp" currentSort={sort} onSort={onSort} align="right">
+                  毛利
+                </SortTh>
+                <SortTh sortKey="net" currentSort={sort} onSort={onSort} align="right">
+                  最終淨利
+                </SortTh>
+                <th scope="col" style={{ ...th, textAlign: "right" }}>
+                  發票
+                </th>
               </tr>
             </thead>
             <tbody>
-              {shown.map((o) => {
-                const gm = o.revenue > 0 ? o.gp / o.revenue : 0;
-                /* 毛利率高得不合理＝多半是開單沒選規格（總價打在數量 1 上） */
-                const suspect = !o.missCost && gm > 0.85;
-                const isOpen = openId === o.orderId;
-                return (
-                  <React.Fragment key={o.orderId}>
-                    <tr
-                      onClick={() => setOpenId(isOpen ? null : o.orderId)}
-                      style={{
-                        cursor: "pointer",
-                        background: isOpen
-                          ? "var(--s2)"
-                          : o.net < 0 && !o.missCost
-                          ? "var(--row-loss)"
-                          : "transparent",
-                      }}
-                    >
-                      <td style={{ ...td, textAlign: "left", fontSize: 11 }}>
-                        {String(o.date).slice(5)}
-                      </td>
-                      <td
-                        style={{
-                          ...tdL,
-                          fontSize: 11,
-                          color:
-                            o.channel === "dealer" ? accentColor : "var(--t2)",
-                          fontWeight: o.channel === "dealer" ? 700 : 400,
+              {paged.length > 0 ? (
+                paged.map((o) => {
+                  const isLoss = !o.missCost && o.net < 0;
+                  const isOpen = openId === o.orderId;
+                  const gm = o.revenue > 0 ? o.gp / o.revenue : 0;
+                  /* 毛利率高得不合理＝多半是開單沒選規格（總價打在數量 1 上） */
+                  const suspect = !o.missCost && gm > 0.85;
+                  const items = o.items || [];
+                  const summary =
+                    items.length === 0
+                      ? "（無明細）"
+                      : items.length === 1
+                      ? items[0].name
+                      : `${items[0].name} 等 ${items.length} 件`;
+                  return (
+                    <React.Fragment key={o.orderId}>
+                      <tr
+                        className={isLoss ? "rl" : ""}
+                        tabIndex={0}
+                        aria-expanded={isOpen}
+                        onClick={() => setOpenId(isOpen ? null : o.orderId)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setOpenId(isOpen ? null : o.orderId);
+                          }
                         }}
+                        style={{ cursor: "pointer", opacity: o.excludedCh ? 0.5 : 1 }}
+                        title={o.excludedCh ? "此通路未勾選計入 KPI（通路拆解可勾回）" : undefined}
                       >
-                        {o.channelLabel}
-                      </td>
-                      <td style={{ ...tdL, fontSize: 11, color: "var(--t3)" }}>
-                        {o.payMethod || "—"}
-                      </td>
-                      <td
-                        style={{
-                          ...tdL,
-                          fontSize: 11,
-                          color: "var(--t3)",
-                          maxWidth: 120,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {o.remark || "—"}
-                      </td>
-                      <td style={td}>{fmt$(o.revenue)}</td>
-                      <td style={td}>
-                        {o.missCost ? (
-                          <span style={{ color: "var(--wn)", fontSize: 10 }}>
-                            {(o.items || []).length ? "缺" : "無明細"}
-                          </span>
-                        ) : (
-                          fmt$(o.oCost)
-                        )}
-                      </td>
-                      <td
-                        style={{
-                          ...td,
-                          fontWeight: 700,
-                          color: o.missCost
-                            ? "var(--t4)"
-                            : suspect
-                            ? "var(--wn)"
-                            : gm >= 0.45
-                            ? "var(--up)"
-                            : gm >= 0.3
-                            ? "var(--wn)"
-                            : "var(--dn)",
-                        }}
-                        title={
-                          suspect
-                            ? "毛利率異常高：可能是開單沒選克數規格（總價打在數量 1 上）"
-                            : undefined
-                        }
-                      >
-                        {o.missCost ? "—" : pct(gm)}
-                        {suspect && (
-                          <span style={{ color: "var(--wn)", marginLeft: 3 }}>
-                            ⚠
-                          </span>
-                        )}
-                      </td>
-                      <td
-                        style={{
-                          ...td,
-                          color: o.net >= 0 ? "var(--t2)" : "var(--dn)",
-                        }}
-                      >
-                        {o.missCost ? "—" : fmt$(o.net)}
-                      </td>
-                      <td style={{ ...td, fontSize: 10 }}>
-                        {o.hasInvoice ? (
-                          <span style={{ color: "var(--up)" }}>已開</span>
-                        ) : (
-                          <span style={{ color: "var(--t4)" }}>—</span>
-                        )}
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr>
-                        <td
-                          colSpan={9}
-                          style={{
-                            padding: "6px 14px 12px 24px",
-                            background: "var(--s2)",
-                            borderBottom: "1px solid var(--s3)",
-                          }}
-                        >
+                        <td style={{ ...td2 }}>
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              fontSize: 12,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 4,
+                            }}
+                          >
+                            {isOpen ? (
+                              <ChevronUp size={11} color="var(--t3)" />
+                            ) : (
+                              <ChevronDown size={11} color="var(--t3)" />
+                            )}
+                            {o.date}
+                          </div>
                           <div
                             style={{
                               fontSize: 10,
-                              color: "var(--t4)",
-                              marginBottom: 6,
+                              color: "var(--t3)",
+                              marginTop: 2,
                               fontFamily: mono,
                             }}
                           >
-                            #{o.orderId}
-                            {o.staff ? `｜銷售人員 ${o.staff}` : ""}
-                            {o.taxId ? `｜統編 ${o.taxId}` : ""}
-                            {`｜營業費 ${fmt$(o.opx)}｜稅 ${fmt$(o.taxAmt)}`}
+                            {o.orderId}
                           </div>
-                          {(o.items || []).length ? (
-                            <table
-                              style={{
-                                width: "100%",
-                                borderCollapse: "collapse",
-                              }}
-                            >
-                              <thead>
-                                <tr>
-                                  <th style={subTh({ textAlign: "left" })}>
-                                    商品
-                                  </th>
-                                  <th style={subTh({ textAlign: "left" })}>
-                                    規格
-                                  </th>
-                                  <th style={subTh()}>數量</th>
-                                  <th style={subTh()}>結帳價</th>
-                                  <th style={subTh()}>單位成本</th>
-                                  <th style={subTh({ textAlign: "left" })}>
-                                    成本來源（配方）
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {o.items.map((it, i) => {
-                                  const has =
-                                    Object.prototype.hasOwnProperty.call(
-                                      it,
-                                      "snapshotCost"
-                                    ) && it.snapshotCost !== null;
-                                  const unit = has
-                                    ? Number(it.snapshotCost)
-                                    : Number(costsEff?.[it.key]) || 0;
-                                  const rc = recipeOf(it.key);
-                                  return (
-                                    <tr key={i}>
-                                      <td
-                                        style={cellL({
-                                          fontSize: 11,
-                                          color: "var(--t1)",
-                                        })}
-                                      >
-                                        {it.name}
-                                      </td>
-                                      <td
-                                        style={cellL({
-                                          fontSize: 11,
-                                          color: "var(--t3)",
-                                        })}
-                                      >
-                                        {it.option || "—"}
-                                      </td>
-                                      <td style={cell()}>{it.qty}</td>
-                                      <td style={cell()}>{fmt$(it.price)}</td>
-                                      <td
-                                        style={cell({
-                                          color:
-                                            unit > 0 ? "var(--t2)" : "var(--wn)",
-                                          fontWeight: unit > 0 ? 400 : 700,
-                                        })}
-                                      >
-                                        {unit > 0 ? fmt$d(unit) : "未填"}
-                                        {has ? (
-                                          <span
-                                            style={{
-                                              fontSize: 9,
-                                              color: "var(--wn)",
-                                              marginLeft: 3,
-                                            }}
-                                          >
-                                            鎖
-                                          </span>
-                                        ) : null}
-                                      </td>
-                                      <td
-                                        style={cellL({
-                                          fontSize: 10,
-                                          color: rc
-                                            ? "var(--accent-text)"
-                                            : "var(--t4)",
-                                        })}
-                                      >
-                                        {rc ||
-                                          (unit > 0
-                                            ? "手填成本"
-                                            : "—（到下方成本資料庫掛配方或填成本）")}
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
+                        </td>
+                        <td style={{ ...td2 }}>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: o.channel === "dealer" ? 700 : 600,
+                              color: o.channel === "dealer" ? accentColor : "var(--t2)",
+                            }}
+                          >
+                            {o.channelLabel}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 2 }}>
+                            {o.payMethod || "—"}
+                          </div>
+                        </td>
+                        <td style={{ ...td2, maxWidth: 200 }}>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: items.length ? "var(--t2)" : "var(--wn)",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              maxWidth: 190,
+                            }}
+                            title={items.map((i) => i.name).join("、")}
+                          >
+                            {summary}
+                          </div>
+                        </td>
+                        <td
+                          style={{
+                            ...td2,
+                            fontSize: 11,
+                            color: "var(--t3)",
+                            maxWidth: 120,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {o.remark || "—"}
+                        </td>
+                        <td
+                          style={{ ...td2, textAlign: "right", fontFamily: mono, fontWeight: 600 }}
+                        >
+                          {fmt$(o.revenue)}
+                        </td>
+                        <td style={{ ...td2, textAlign: "right", fontFamily: mono, color: "var(--dn)" }}>
+                          {o.missCost ? (
+                            <span style={{ color: "var(--wn)", fontSize: 10, fontWeight: 700 }}>
+                              {items.length ? "未填" : "無明細"}
+                            </span>
                           ) : (
-                            <div style={{ fontSize: 11, color: "var(--wn)" }}>
-                              這張交易沒有對到商品明細——訂單明細報表的日期範圍要往前多抓一個月再匯一次，會自動補齊。
-                            </div>
+                            `-${fmt$(o.oCost)}`
+                          )}
+                        </td>
+                        <td
+                          style={{ ...td2, textAlign: "right", fontFamily: mono, fontWeight: 600 }}
+                          title={
+                            suspect
+                              ? "毛利率異常高：可能是開單沒選克數規格（總價打在數量 1 上）"
+                              : undefined
+                          }
+                        >
+                          {o.missCost ? (
+                            <span style={{ color: "var(--t4)" }}>—</span>
+                          ) : (
+                            <>
+                              {fmt$(o.gp)}
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  color: suspect ? "var(--wn)" : "var(--t4)",
+                                  marginLeft: 4,
+                                }}
+                              >
+                                {pct(gm)}
+                                {suspect ? "⚠" : ""}
+                              </span>
+                            </>
+                          )}
+                        </td>
+                        <td
+                          style={{
+                            ...td2,
+                            textAlign: "right",
+                            fontFamily: mono,
+                            fontWeight: 800,
+                            color: o.missCost
+                              ? "var(--t4)"
+                              : isLoss
+                              ? "var(--dn)"
+                              : accentColor,
+                          }}
+                        >
+                          {o.missCost ? "—" : fmt$(o.net)}
+                        </td>
+                        <td style={{ ...td2, textAlign: "right", fontSize: 10 }}>
+                          {o.hasInvoice ? (
+                            <span style={{ color: "var(--up)" }}>已開</span>
+                          ) : (
+                            <span style={{ color: "var(--t4)" }}>—</span>
                           )}
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
+                      {isOpen && (
+                        <tr>
+                          <td
+                            colSpan={9}
+                            style={{ ...td2, background: "var(--s2)", padding: "16px 20px" }}
+                          >
+                            <POSOrderDetail
+                              order={o}
+                              costsEff={costsEff}
+                              recipes={recipes}
+                              components={components}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td
+                    colSpan={9}
+                    style={{ ...td2, textAlign: "center", color: "var(--t4)", padding: 40 }}
+                  >
+                    找不到符合條件的訂單
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-        {orders.length > PAGE && (
-          <div style={{ marginTop: 10, textAlign: "center" }}>
-            <Btn onClick={() => setShowAll((v) => !v)} style={{ fontSize: 10 }}>
-              {showAll
-                ? `只顯示前 ${PAGE} 筆`
-                : `顯示全部 ${orders.length} 筆`}
-            </Btn>
+        {/* Pagination（同官網） */}
+        {filtered.length > pageSize && (
+          <div
+            style={{
+              padding: "12px 4px 0",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: 8,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: "var(--t3)", fontFamily: mono }}>
+                {curPage * pageSize + 1}–
+                {Math.min((curPage + 1) * pageSize, filtered.length)} / {filtered.length} 筆
+              </span>
+              <span style={{ fontSize: 10, color: "var(--t4)" }}>每頁</span>
+              <select
+                value={pageSize}
+                aria-label="每頁筆數"
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(0);
+                }}
+                style={{ ...sel, padding: "3px 8px", fontSize: 11, fontFamily: mono }}
+              >
+                {[20, 30, 50, 100].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {[
+                { label: "«", aria: "第一頁", action: () => setPage(0) },
+                { label: "‹", aria: "上一頁", action: () => setPage(Math.max(0, curPage - 1)) },
+                null,
+                {
+                  label: "›",
+                  aria: "下一頁",
+                  action: () => setPage(Math.min(totalPages - 1, curPage + 1)),
+                },
+                { label: "»", aria: "最後一頁", action: () => setPage(totalPages - 1) },
+              ].map((btn, i) =>
+                btn === null ? (
+                  <span
+                    key={i}
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 800,
+                      color: "var(--t1)",
+                      fontFamily: mono,
+                      padding: "0 10px",
+                    }}
+                  >
+                    {curPage + 1} / {totalPages}
+                  </span>
+                ) : (
+                  <Btn key={i} aria-label={btn.aria} onClick={btn.action} style={{ padding: "4px 10px" }}>
+                    {btn.label}
+                  </Btn>
+                )
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -3902,6 +4084,192 @@ function OrderDetail({ order, isSL, slFp, slCosts, spCosts }) {
   );
 }
 
+/* 門市單筆訂單決策明細：版型同 OrderDetail（左 商品明細／右 損益拆解），
+   差別在門市無平台抽成、稅只課開票單、成本來源顯示配方 */
+function POSOrderDetail({ order, costsEff, recipes, components }) {
+  const has = (it) =>
+    Object.prototype.hasOwnProperty.call(it, "snapshotCost") &&
+    it.snapshotCost !== null;
+  const unitOf = (it) =>
+    has(it) ? Number(it.snapshotCost) || 0 : Number(costsEff?.[it.key]) || 0;
+  const recipeOf = (key) => {
+    const ls = recipes?.[key];
+    if (!ls || !ls.length) return null;
+    return ls
+      .map((l) => `${components?.[l.compId]?.name || "（組件已刪）"}×${l.qty}`)
+      .join("＋");
+  };
+  const items = order.items || [];
+  const lineSum = items.reduce(
+    (s, it) => s + (Number(it.price) || 0) * (it.qty || 1),
+    0
+  );
+  const discount = lineSum > 0 ? Math.max(0, lineSum - order.revenue) : 0;
+  const lines = order.missCost
+    ? [
+        { l: "訂單營收", v: order.revenue },
+        { l: "商品成本", v: null, neg: true, note: items.length ? "未填" : "無明細" },
+        { l: "毛利（無平台抽成）", v: null, sub: true, note: "—" },
+        { l: "內部營業費", v: -order.opx, neg: true },
+        {
+          l: order.hasInvoice ? "稅賦（已開票）" : "稅賦（未開票免課）",
+          v: -order.taxAmt,
+          neg: true,
+        },
+        { l: "最終淨利", v: null, bold: true, note: "—（缺成本）" },
+      ]
+    : [
+        { l: "訂單營收", v: order.revenue },
+        { l: "商品成本", v: -order.oCost, neg: true },
+        { l: "毛利（無平台抽成）", v: order.gp, sub: true },
+        { l: "內部營業費", v: -order.opx, neg: true },
+        {
+          l: order.hasInvoice ? "稅賦（已開票）" : "稅賦（未開票免課）",
+          v: -order.taxAmt,
+          neg: true,
+        },
+        { l: "最終淨利", v: order.net, bold: true },
+      ];
+  const metaBits = [
+    order.status && `狀態：${order.status}`,
+    order.payMethod && `付款：${order.payMethod}`,
+    order.staff && `銷售人員：${order.staff}`,
+    order.taxId && `統編：${order.taxId}`,
+    order.hasInvoice ? "發票：已開立" : "發票：未開立",
+    discount > 0 && `全單折扣：${fmt$(discount)}（已按比例攤入商品）`,
+    order.remark && `備註：${order.remark}`,
+  ].filter(Boolean);
+  const secTitle = {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "var(--t3)",
+    letterSpacing: "0.05em",
+    marginBottom: 6,
+  };
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+        gap: 20,
+      }}
+    >
+      <div>
+        <div style={secTitle}>商品明細</div>
+        {items.length ? (
+          items.map((it, i) => {
+            const u = unitOf(it);
+            const rc = recipeOf(it.key);
+            return (
+              <div
+                key={i}
+                style={{
+                  padding: "5px 0",
+                  borderBottom: "1px dashed var(--s3)",
+                  fontSize: 12,
+                }}
+              >
+                <div
+                  style={{ display: "flex", justifyContent: "space-between", gap: 10 }}
+                >
+                  <span style={{ color: "var(--t1)", minWidth: 0 }}>
+                    {it.name}
+                    {it.option ? `（${it.option}）` : ""} × {it.qty}
+                  </span>
+                  <span
+                    style={{ fontFamily: mono, whiteSpace: "nowrap", color: "var(--t2)" }}
+                  >
+                    {fmt$((Number(it.price) || 0) * it.qty)} ／ 成本{" "}
+                    {u > 0 ? (
+                      <>
+                        {fmt$(u * it.qty)}
+                        {has(it) && (
+                          <span style={{ fontSize: 9, color: "var(--wn)", marginLeft: 3 }}>
+                            鎖
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span style={{ color: "var(--wn)", fontWeight: 700 }}>未填</span>
+                    )}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: rc ? "var(--accent-text)" : "var(--t4)",
+                    marginTop: 2,
+                  }}
+                >
+                  {rc
+                    ? `配方：${rc}`
+                    : u > 0
+                    ? "手填成本"
+                    : "無成本來源——到下方成本資料庫掛配方或填成本"}
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div style={{ fontSize: 12, color: "var(--wn)", lineHeight: 1.6 }}>
+            這張交易沒有對到商品明細——POS訂單明細的日期範圍往前多抓一個月再匯一次，會自動補齊。
+          </div>
+        )}
+        {metaBits.length > 0 && (
+          <div
+            style={{ fontSize: 11, color: "var(--t3)", marginTop: 8, lineHeight: 1.8 }}
+          >
+            {metaBits.join("　")}
+          </div>
+        )}
+      </div>
+      <div>
+        <div style={secTitle}>損益拆解</div>
+        {lines.map((r, i) => (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              padding: r.sub || r.bold ? "8px 0 4px" : "4px 0",
+              fontSize: 12,
+              borderTop: r.sub || r.bold ? "1px solid var(--s3)" : "none",
+              marginTop: r.sub || r.bold ? 4 : 0,
+            }}
+          >
+            <span
+              style={{
+                color: r.bold ? "var(--t1)" : "var(--t2)",
+                fontWeight: r.bold || r.sub ? 700 : 500,
+              }}
+            >
+              {r.l}
+            </span>
+            <span
+              style={{
+                fontFamily: mono,
+                fontWeight: r.bold ? 800 : 600,
+                color:
+                  r.v === null
+                    ? "var(--wn)"
+                    : r.bold
+                    ? r.v >= 0
+                      ? "var(--up)"
+                      : "var(--dn)"
+                    : r.neg
+                    ? "var(--dn)"
+                    : "var(--t1)",
+              }}
+            >
+              {r.v === null ? r.note : fmt$(r.v)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Main App ───────────────────────────────────────────────── */
 function ProfitCenter() {
   const [theme, setTheme] = useState(() => gl(SK.theme, "light"));
@@ -5326,6 +5694,19 @@ function ProfitCenter() {
         ch.coveredNet += fin.finalNet;
       }
       if (order.hasInvoice) ch.invoiceRev += fin.gross;
+      /* 訂單明細表列出「所有」有效訂單（含未計入 KPI 的通路，畫面上會灰掉標示）——
+         逐筆檢視經銷單賺不賺正是這張表的用途；KPI／商品表才受計入清單限制 */
+      ol.push({
+        ...order,
+        oCost: fin.oCost,
+        gp: fin.gp,
+        opx: fin.opAmt,
+        taxAmt: fin.txAmt,
+        net: fin.finalNet,
+        missCost: fin.missCost,
+        excludedCh: excluded,
+        channelLabel: posChannelLabel(order.channel),
+      });
       if (excluded) return;
       /* 商品行營收＝結帳價×數量，是「全單折扣前」的價；把折扣按比例攤回各行，
          商品毛利率才會跟訂單毛利率對得起來（例：公版華崗 400×8=3200、全單折 200、合計 3000） */
@@ -5379,16 +5760,6 @@ function ProfitCenter() {
         if (fin.finalNet < 0) t.lossCount++;
       }
       if (order.hasInvoice) t.invoiceRev += fin.gross;
-      ol.push({
-        ...order,
-        oCost: fin.oCost,
-        gp: fin.gp,
-        opx: fin.opAmt,
-        taxAmt: fin.txAmt,
-        net: fin.finalNet,
-        missCost: fin.missCost,
-        channelLabel: posChannelLabel(order.channel),
-      });
     });
     ol.sort((a, b) => String(b.date).localeCompare(String(a.date)));
     const covered = t.rev - t.noCostRev;
@@ -8289,6 +8660,15 @@ function ProfitCenter() {
                   monthly={posMonthly}
                   sY={sY}
                   sM={effM}
+                  periodLabel={
+                    sY === "Custom"
+                      ? `${range.from || "起"}~${range.to || "迄"}`
+                      : sY === "All"
+                      ? "歷年"
+                      : effM === "All"
+                      ? `${sY}年`
+                      : `${sY}-${effM}`
+                  }
                 />
                 {costMatrixCard}
               </>
