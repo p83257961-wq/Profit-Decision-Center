@@ -919,8 +919,8 @@ const PosKpi = ({ label, value, sub, color }) => (
 );
 function POSDashboard({
   data,
-  excludeDealer,
-  onToggleDealer,
+  excluded,
+  onSetExcluded,
   accentColor,
   accentDim,
   accentBdr,
@@ -1020,26 +1020,37 @@ function POSDashboard({
           <div style={{ fontSize: 13, fontWeight: 700, color: "var(--t1)" }}>
             通路拆解
           </div>
-          <label
+          <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 11,
-              fontWeight: 600,
-              color: "var(--t3)",
-              cursor: "pointer",
               marginLeft: "auto",
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
             }}
           >
-            <input
-              type="checkbox"
-              checked={excludeDealer}
-              onChange={(e) => onToggleDealer(e.target.checked)}
-              style={{ accentColor }}
-            />{" "}
-            排除經銷·老客價（看純門市零售）
-          </label>
+            <span style={{ fontSize: 10, color: "var(--t4)" }}>
+              取消勾選＝不計入上方 KPI
+            </span>
+            {excluded.length > 0 && (
+              <Btn onClick={() => onSetExcluded([])} style={{ fontSize: 10 }}>
+                全部計入
+              </Btn>
+            )}
+            {data.channels.length > 1 && (
+              <Btn
+                onClick={() =>
+                  onSetExcluded(
+                    data.channels
+                      .filter((c) => c.key !== "retail")
+                      .map((c) => c.key)
+                  )
+                }
+                style={{ fontSize: 10 }}
+              >
+                只看現場零售
+              </Btn>
+            )}
+          </div>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table
@@ -1047,6 +1058,7 @@ function POSDashboard({
           >
             <thead>
               <tr>
+                <th style={{ ...th, textAlign: "left", width: 30 }}></th>
                 <th style={{ ...th, textAlign: "left" }}>通路</th>
                 <th style={th}>營收</th>
                 <th style={th}>佔比</th>
@@ -1065,8 +1077,26 @@ function POSDashboard({
                 return (
                   <tr
                     key={c.key}
-                    style={{ background: isDealer ? accentDim : "transparent" }}
+                    style={{
+                      background: isDealer ? accentDim : "transparent",
+                      opacity: c.excluded ? 0.4 : 1,
+                    }}
                   >
+                    <td style={{ ...td, textAlign: "left", padding: "9px 4px" }}>
+                      <input
+                        type="checkbox"
+                        checked={!c.excluded}
+                        aria-label={`把${c.label}計入 KPI`}
+                        onChange={(e) =>
+                          onSetExcluded(
+                            e.target.checked
+                              ? excluded.filter((k) => k !== c.key)
+                              : [...excluded, c.key]
+                          )
+                        }
+                        style={{ accentColor, cursor: "pointer" }}
+                      />
+                    </td>
                     <td
                       style={{
                         ...td,
@@ -3438,7 +3468,8 @@ function ProfitCenter() {
   const [posRecipes, setPosRecipes] = useState(() => gl(SK.posRecipes, {}));
   /* 門市匯入：兩份 xls 分次拖入，先進暫存區、湊齊再 join */
   const posStage = useRef({ trans: null, orders: null });
-  const [posExcludeDealer, setPosExcludeDealer] = useState(false);
+  /* 門市通路過濾：被排除的通路仍會顯示在表上（數字照算），但不計入總計 KPI */
+  const [posExcluded, setPosExcluded] = useState([]);
 
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
@@ -4687,6 +4718,29 @@ function ProfitCenter() {
   };
 
   /* ─── 期間過濾（年月／自訂區間共用） ────────────────────── */
+  /* 目前平台實際有資料的月份（切平台時保留期間，但該平台沒有那個月就視為全月份，
+     避免切到門市看見一片 0——期間選擇本身不變，切回去照樣是原本的月份） */
+  const monthsOfPlatform = useMemo(() => {
+    const src =
+      platform === "pos"
+        ? posOrders
+        : platform === "shopline"
+        ? slOrders
+        : platform === "shopee"
+        ? spOrders
+        : null;
+    if (!src) return null;
+    return new Set(
+      Object.values(src)
+        .map((o) => String(o.date || ""))
+        .filter((d) => sY === "All" || d.startsWith(sY))
+        .map((d) => d.substring(5, 7))
+        .filter(Boolean)
+    );
+  }, [platform, posOrders, slOrders, spOrders, sY]);
+  const effM =
+    sM !== "All" && monthsOfPlatform && !monthsOfPlatform.has(sM) ? "All" : sM;
+
   const inPeriod = useCallback(
     (d) => {
       const s = String(d || "");
@@ -4696,10 +4750,10 @@ function ProfitCenter() {
         return true;
       }
       if (sY !== "All" && !s.startsWith(sY)) return false;
-      if (sM !== "All" && !s.startsWith(`${sY}-${sM}`)) return false;
+      if (effM !== "All" && !s.startsWith(`${sY}-${effM}`)) return false;
       return true;
     },
-    [sY, sM, range]
+    [sY, effM, range]
   );
 
   /* ─── 有效成本表：配方（組件×用量）優先，無配方回退手填 ── */
@@ -4778,8 +4832,8 @@ function ProfitCenter() {
         t.testCount++;
         return;
       }
-      if (posExcludeDealer && order.channel === "dealer") return;
       const ch = byChannel[order.channel] || byChannel.retail;
+      const excluded = posExcluded.includes(order.channel);
       order.items.forEach((it) => {
         const has =
           Object.prototype.hasOwnProperty.call(it, "snapshotCost") &&
@@ -4806,6 +4860,20 @@ function ProfitCenter() {
         mm[it.key].totalCost += ic;
         mm[it.key].profitContribution += ir - ic;
       });
+      /* 通路層一律照算（表上看得到）；總計 KPI 只加未被排除的通路 */
+      ch.rev += fin.gross;
+      ch.cost += fin.oCost;
+      ch.gp += fin.gp;
+      ch.net += fin.finalNet;
+      ch.orders++;
+      if (fin.missCost) ch.noCostRev += fin.gross;
+      else {
+        ch.coveredRev += fin.gross;
+        ch.coveredGp += fin.gp;
+        ch.coveredNet += fin.finalNet;
+      }
+      if (order.hasInvoice) ch.invoiceRev += fin.gross;
+      if (excluded) return;
       t.rev += fin.gross;
       t.cost += fin.oCost;
       t.gp += fin.gp;
@@ -4816,25 +4884,13 @@ function ProfitCenter() {
       if (fin.missCost) {
         t.noCostRev += fin.gross;
         t.noCostCount++;
-        ch.noCostRev += fin.gross;
       } else {
         /* 毛利率只用「成本齊全」的訂單當分母，否則會被無成本單灌成虛高 */
         t.coveredRev += fin.gross;
         t.coveredGp += fin.gp;
         t.coveredNet += fin.finalNet;
-        ch.coveredRev += fin.gross;
-        ch.coveredGp += fin.gp;
-        ch.coveredNet += fin.finalNet;
       }
-      if (order.hasInvoice) {
-        t.invoiceRev += fin.gross;
-        ch.invoiceRev += fin.gross;
-      }
-      ch.rev += fin.gross;
-      ch.cost += fin.oCost;
-      ch.gp += fin.gp;
-      ch.net += fin.finalNet;
-      ch.orders++;
+      if (order.hasInvoice) t.invoiceRev += fin.gross;
       ol.push({
         ...order,
         oCost: fin.oCost,
@@ -4852,9 +4908,9 @@ function ProfitCenter() {
       years,
       orderList: ol,
       matrixList: Object.values(mm).sort((a, b) => b.soldQty - a.soldQty),
-      channels: POS_CHANNELS.map((c) => byChannel[c.key]).filter(
-        (c) => c.rev > 0 || c.orders > 0
-      ),
+      channels: POS_CHANNELS.map((c) => byChannel[c.key])
+        .filter((c) => c.rev > 0 || c.orders > 0)
+        .map((c) => ({ ...c, excluded: posExcluded.includes(c.key) })),
       summary: {
         ...t,
         /* 毛利／淨利率一律用「成本齊全」的訂單當基數 */
@@ -4865,7 +4921,7 @@ function ProfitCenter() {
         invoiceRate: t.rev > 0 ? t.invoiceRev / t.rev : 0,
       },
     };
-  }, [posOrders, posEffCosts, slFp, inPeriod, posExcludeDealer]);
+  }, [posOrders, posEffCosts, slFp, inPeriod, posExcluded]);
 
   const slData = useMemo(() => {
     const all = Object.values(slOrders);
@@ -5956,10 +6012,11 @@ function ProfitCenter() {
   );
   const commitFp = useCallback(
     (field, v) => {
-      const setter = isSL ? setSlFp : setSpFp;
+      /* 門市沿用官網那組參數（營業費／稅率是全公司共用口徑） */
+      const setter = isSL || isPOS ? setSlFp : setSpFp;
       setter((p) => ({ ...p, [field]: v }));
     },
-    [isSL]
+    [isSL, isPOS]
   );
 
   /* ── 未填成本跳轉 helper ── */
@@ -6061,7 +6118,14 @@ function ProfitCenter() {
                   letterSpacing: "-0.01em",
                 }}
               >
-                {isOverview ? "跨平台" : isSL ? "官網" : "蝦皮"} 利潤決策中心
+                {isOverview
+                  ? "跨平台"
+                  : isPOS
+                  ? "門市"
+                  : isSL
+                  ? "官網"
+                  : "蝦皮"}{" "}
+                利潤決策中心
               </h1>
               <div
                 style={{
@@ -6211,7 +6275,7 @@ function ProfitCenter() {
               </div>
             ) : (
               <select
-                value={sM}
+                value={effM}
                 onChange={(e) => setSM(e.target.value)}
                 aria-label="選擇月份"
                 style={sel}
@@ -6328,7 +6392,7 @@ function ProfitCenter() {
                     : spS?.validN}{" "}
                   筆 ·{" "}
                   {sY === "All" ? "歷年" : sY === "Custom" ? "自訂區間" : sY}
-                  {sM !== "All" && sY !== "Custom" ? `/${sM}` : ""}
+                  {effM !== "All" && sY !== "Custom" ? `/${effM}` : ""}
                 </div>
               )}
 
@@ -6422,6 +6486,12 @@ function ProfitCenter() {
                       { l: "預估稅率", n: "tax" },
                       { l: "系統服務費率", n: "platformFeeRate" },
                     ]
+                  : isPOS
+                  ? /* 門市無平台抽成、無系統費，只吃營業費與稅率（與官網同一組參數） */
+                    [
+                      { l: "內部營業費", n: "opExpense" },
+                      { l: "預估稅率", n: "tax" },
+                    ]
                   : [
                       { l: "淨利目標", n: "targetNet" },
                       { l: "內部營業費", n: "opExpense" },
@@ -6453,7 +6523,7 @@ function ProfitCenter() {
                       <FpInput
                         field={item.n}
                         label={`${item.l}（%）`}
-                        value={isSL ? slFp[item.n] : spFp[item.n]}
+                        value={isSL || isPOS ? slFp[item.n] : spFp[item.n]}
                         onCommit={commitFp}
                       />
                       <span style={{ fontSize: 11, color: "var(--t4)" }}>
@@ -6465,7 +6535,7 @@ function ProfitCenter() {
               </div>
 
               {/* Commission Panel (Shopee only) */}
-              {!isSL && currentData && (
+              {!isSL && !isPOS && currentData && (
                 <MonthlyExpensePanel
                   title="分潤費用"
                   icon={<Users size={12} color="var(--purple)" />}
@@ -6484,7 +6554,7 @@ function ProfitCenter() {
                 <Btn
                   v="primary"
                   onClick={() => {
-                    const src = isSL ? slOrders : spOrders;
+                    const src = isPOS ? posOrders : isSL ? slOrders : spOrders;
                     const toDelete = Object.keys(src).filter((k) =>
                       inPeriod(String(src[k].date || ""))
                     );
@@ -6492,18 +6562,20 @@ function ProfitCenter() {
                       toast("本期無訂單可清除", { type: "warning" });
                       return;
                     }
+                    /* 用 effM（實際生效的月份）而非 sM，否則會出現
+                       「說要清 7 月、實際清全年」的誤導 */
                     const periodLabel =
                       sY === "Custom"
                         ? `${range.from || "起"} ～ ${range.to || "迄"}`
                         : sY === "All"
                         ? "歷年"
-                        : sM === "All"
+                        : effM === "All"
                         ? `${sY} 年`
-                        : `${sY}/${sM}`;
+                        : `${sY}/${effM}`;
                     setConfirmBox({
                       title: "重置本期訂單",
                       message: `將清除「${periodLabel}」的${
-                        isSL ? "官網" : "蝦皮"
+                        isPOS ? "門市" : isSL ? "官網" : "蝦皮"
                       }訂單共 ${
                         toDelete.length
                       } 筆。\n清除後 10 秒內可在右下角通知按「復原」，或重新匯入該期報表。${
@@ -6514,7 +6586,11 @@ function ProfitCenter() {
                       danger: true,
                       onOk: () => {
                         const removed = {};
-                        const setter = isSL ? setSlOrders : setSpOrders;
+                        const setter = isPOS
+                          ? setPosOrders
+                          : isSL
+                          ? setSlOrders
+                          : setSpOrders;
                         /* functional update：以最新訂單集為基底刪除，避免過期閉包 */
                         setter((cur) => {
                           const updated = { ...cur };
@@ -6565,7 +6641,7 @@ function ProfitCenter() {
                 allMonthly={allMonthly}
                 theme={theme}
                 sY={sY}
-                sM={sM}
+                sM={effM}
                 range={range}
                 onNavigate={(id) => setPlatform(id)}
               />
@@ -6599,8 +6675,8 @@ function ProfitCenter() {
             ) : isPOS ? (
               <POSDashboard
                 data={posData}
-                excludeDealer={posExcludeDealer}
-                onToggleDealer={setPosExcludeDealer}
+                excluded={posExcluded}
+                onSetExcluded={setPosExcluded}
                 accentColor={accentColor}
                 accentDim={accentDim}
                 accentBdr={accentBdr}
@@ -6759,7 +6835,7 @@ function ProfitCenter() {
                           <PeriodCompare
                             monthly={slMonthly}
                             sY={sY}
-                            sM={sM}
+                            sM={effM}
                           />
                         </div>
                         <div style={{ textAlign: "right" }}>
@@ -7298,7 +7374,7 @@ function ProfitCenter() {
                           <PeriodCompare
                             monthly={spMonthly}
                             sY={sY}
-                            sM={sM}
+                            sM={effM}
                           />
                         </div>
                         <div style={{ textAlign: "right" }}>
