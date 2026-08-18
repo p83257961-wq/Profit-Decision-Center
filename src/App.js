@@ -76,6 +76,30 @@ const FSPC_SP_ORD = { collection: "warrooms", docId: "unified_sp_orders_v1" };
 /* 新的按月拆分 collection */
 const SL_MONTHLY_COLL = "sl_orders_monthly";
 const SP_MONTHLY_COLL = "sp_orders_monthly";
+const POS_MONTHLY_COLL = "pos_orders_monthly";
+
+/* ─── 門市 POS：通路分類（吃交易明細「付款方式」欄） ─────────── */
+const POS_CHANNELS = [
+  { key: "retail", label: "現場零售" },
+  { key: "dealer", label: "經銷·老客價" },
+  { key: "phone", label: "電話訂購" },
+  { key: "omnichat", label: "Omnichat" },
+  { key: "partner", label: "合作通路" },
+  { key: "corp", label: "企業採購" },
+];
+const posChannelOf = (payMethod) => {
+  const p = String(payMethod || "");
+  if (p.includes("經銷") || p.includes("老客")) return "dealer";
+  if (p.includes("電話")) return "phone";
+  if (/omnichat/i.test(p)) return "omnichat";
+  if (p.includes("合作")) return "partner";
+  if (p.includes("企業")) return "corp";
+  return "retail";
+};
+const posChannelLabel = (key) =>
+  POS_CHANNELS.find((c) => c.key === key)?.label || "現場零售";
+/* 測試單門檻：金額 ≤ 此值視為測試（LINE Pay 1 元那類），預設排除計算 */
+const POS_TEST_MAX = 10;
 
 /* 依 YYYY-MM 把訂單分組 */
 const groupOrdersByMonth = (orders) => {
@@ -131,6 +155,9 @@ const SK = {
   components: "upc_components_v1",
   slRecipes: "upc_sl_recipes_v1",
   spRecipes: "upc_sp_recipes_v1",
+  posOrders: "upc_pos_orders_v1",
+  posCosts: "upc_pos_costs_v1",
+  posRecipes: "upc_pos_recipes_v1",
   theme: "upc_theme_v1",
 };
 
@@ -360,6 +387,7 @@ const CSS = `
   --bar-track:#EAEAE6;
   --row-loss:rgba(192,57,43,0.04);
   --sp-accent:#EE4D2D;--sp-accent-dim:rgba(238,77,45,0.06);--sp-accent-bdr:rgba(238,77,45,0.2);
+  --pos-accent:#7B5EA7;--pos-accent-dim:rgba(123,94,167,0.06);--pos-accent-bdr:rgba(123,94,167,0.2);
 }
 [data-theme="dark"]{
   --bg:#080A0E;--s1:#0E1117;--s2:#151921;--s3:#1C212B;--s4:#282D38;
@@ -373,6 +401,7 @@ const CSS = `
   --bar-track:#1C212B;
   --row-loss:rgba(231,76,60,0.07);
   --sp-accent:#FF6533;--sp-accent-dim:rgba(255,101,51,0.08);--sp-accent-bdr:rgba(255,101,51,0.22);
+  --pos-accent:#9B7FCA;--pos-accent-dim:rgba(155,127,202,0.08);--pos-accent-bdr:rgba(155,127,202,0.22);
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 ::-webkit-scrollbar{width:4px;height:4px;}
@@ -858,6 +887,504 @@ const CompPicker = React.memo(function CompPicker({ compGroups, onPick }) {
     </div>
   );
 });
+
+/* ─── 門市 POS Dashboard ────────────────────────────────────── */
+const posCard = {
+  background: "var(--s1)",
+  border: "1px solid var(--s3)",
+  borderRadius: 16,
+  padding: 18,
+};
+const PosKpi = ({ label, value, sub, color }) => (
+  <div style={{ ...posCard, padding: 14 }}>
+    <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700 }}>
+      {label}
+    </div>
+    <div
+      style={{
+        fontFamily: mono,
+        fontSize: 20,
+        fontWeight: 700,
+        color: color || "var(--t1)",
+        marginTop: 6,
+        letterSpacing: "-0.5px",
+      }}
+    >
+      {value}
+    </div>
+    {sub && (
+      <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 4 }}>{sub}</div>
+    )}
+  </div>
+);
+function POSDashboard({
+  data,
+  excludeDealer,
+  onToggleDealer,
+  accentColor,
+  accentDim,
+  accentBdr,
+  opExpense,
+  taxRate,
+}) {
+  const s = data.summary;
+  const pct = (v) => `${(v * 100).toFixed(1)}%`;
+  const netColor =
+    s.netMargin >= 0.15
+      ? "var(--up)"
+      : s.netMargin >= 0.05
+      ? "var(--wn)"
+      : "var(--dn)";
+  const covColor =
+    s.costCoverage >= 0.9
+      ? "var(--up)"
+      : s.costCoverage >= 0.6
+      ? "var(--wn)"
+      : "var(--dn)";
+  const th = {
+    padding: "9px 10px",
+    fontSize: 10,
+    fontWeight: 700,
+    color: "var(--t3)",
+    textAlign: "right",
+    borderBottom: "1px solid var(--s3)",
+    whiteSpace: "nowrap",
+  };
+  const td = {
+    padding: "9px 10px",
+    fontSize: 12,
+    fontFamily: mono,
+    textAlign: "right",
+    borderBottom: "1px solid var(--s3)",
+    color: "var(--t2)",
+    whiteSpace: "nowrap",
+  };
+  return (
+    <>
+      {/* KPI */}
+      <div
+        className="f0"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
+          gap: 12,
+        }}
+      >
+        <PosKpi
+          label="門市營收"
+          value={fmt$(s.rev)}
+          sub={`${s.valid} 筆 ｜ 客單 ${fmt$(s.aov)}`}
+        />
+        <PosKpi
+          label="毛利（無平台抽成）"
+          value={fmt$(s.coveredGp)}
+          sub={`毛利率 ${pct(s.grossMargin)}${
+            s.noCostCount ? "（僅計成本齊全的單）" : ""
+          }`}
+          color="var(--t1)"
+        />
+        <PosKpi
+          label="稅後淨利"
+          value={fmt$(s.coveredNet)}
+          sub={`淨利率 ${pct(s.netMargin)}｜營業費 ${opExpense}%`}
+          color={netColor}
+        />
+        <PosKpi
+          label="成本覆蓋率"
+          value={pct(s.costCoverage)}
+          sub={
+            s.noCostCount
+              ? `${s.noCostCount} 筆無成本（品項未選正規）`
+              : "全部訂單都算得出成本"
+          }
+          color={covColor}
+        />
+        <PosKpi
+          label="開票比例"
+          value={pct(s.invoiceRate)}
+          sub={`課稅 ${taxRate}%｜未開票不課`}
+        />
+      </div>
+
+      {/* 通路分組 */}
+      <div className="f0" style={posCard}>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--t1)" }}>
+            通路拆解
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 11,
+              fontWeight: 600,
+              color: "var(--t3)",
+              cursor: "pointer",
+              marginLeft: "auto",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={excludeDealer}
+              onChange={(e) => onToggleDealer(e.target.checked)}
+              style={{ accentColor }}
+            />{" "}
+            排除經銷·老客價（看純門市零售）
+          </label>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table
+            style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}
+          >
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: "left" }}>通路</th>
+                <th style={th}>營收</th>
+                <th style={th}>佔比</th>
+                <th style={th}>筆數</th>
+                <th style={th}>客單</th>
+                <th style={th}>毛利率</th>
+                <th style={th}>淨利率</th>
+                <th style={th}>開票</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.channels.map((c) => {
+                const gm = c.coveredRev > 0 ? c.coveredGp / c.coveredRev : 0;
+                const nm = c.coveredRev > 0 ? c.coveredNet / c.coveredRev : 0;
+                const isDealer = c.key === "dealer";
+                return (
+                  <tr
+                    key={c.key}
+                    style={{ background: isDealer ? accentDim : "transparent" }}
+                  >
+                    <td
+                      style={{
+                        ...td,
+                        textAlign: "left",
+                        fontFamily: "inherit",
+                        fontWeight: 700,
+                        color: "var(--t1)",
+                      }}
+                    >
+                      {c.label}
+                      {isDealer && (
+                        <span
+                          style={{
+                            marginLeft: 6,
+                            fontSize: 9,
+                            padding: "1px 5px",
+                            borderRadius: 4,
+                            border: `1px solid ${accentBdr}`,
+                            color: accentColor,
+                          }}
+                        >
+                          老闆關係單
+                        </span>
+                      )}
+                    </td>
+                    <td style={td}>{fmt$(c.rev)}</td>
+                    <td style={td}>
+                      {s.rev > 0 ? pct(c.rev / s.rev) : "—"}
+                    </td>
+                    <td style={td}>{c.orders}</td>
+                    <td style={td}>
+                      {c.orders > 0 ? fmt$(c.rev / c.orders) : "—"}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        color: gm >= 0.45 ? "var(--up)" : gm >= 0.35 ? "var(--wn)" : "var(--dn)",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {c.coveredRev > 0 ? pct(gm) : "—"}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        color: nm >= 0.1 ? "var(--up)" : nm >= 0 ? "var(--wn)" : "var(--dn)",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {c.coveredRev > 0 ? pct(nm) : "—"}
+                    </td>
+                    <td style={td}>
+                      {c.rev > 0 ? pct(c.invoiceRev / c.rev) : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {(s.noCostRev > 0 || s.testCount > 0 || s.cancelledTotal > 0) && (
+          <div
+            style={{
+              marginTop: 12,
+              fontSize: 10,
+              color: "var(--t4)",
+              lineHeight: 1.7,
+            }}
+          >
+            {s.noCostRev > 0 && (
+              <div>
+                ※ {fmt$(s.noCostRev)} 營收的商品未選正規品項（如「茶葉」泛稱），
+                已計入營收但排除在毛利計算外
+              </div>
+            )}
+            {s.testCount > 0 && (
+              <div>
+                ※ 已排除 {s.testCount} 筆測試單（≤{POS_TEST_MAX} 元，共 {fmt$(s.testTotal)}）
+              </div>
+            )}
+            {s.cancelledTotal > 0 && (
+              <div>※ 已排除取消／退款 {fmt$(s.cancelledTotal)}</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 商品毛利 */}
+      <div className="f0" style={posCard}>
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: "var(--t1)",
+            marginBottom: 12,
+          }}
+        >
+          商品毛利（本期 {data.matrixList.length} 項）
+        </div>
+        <div style={{ overflowX: "auto", maxHeight: 380, overflowY: "auto" }}>
+          <table
+            style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}
+          >
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: "left" }}>商品</th>
+                <th style={{ ...th, textAlign: "left" }}>規格</th>
+                <th style={th}>數量</th>
+                <th style={th}>營收</th>
+                <th style={th}>毛利</th>
+                <th style={th}>毛利率</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.matrixList.slice(0, 60).map((p) => {
+                const gm =
+                  p.totalRevenue > 0
+                    ? p.profitContribution / p.totalRevenue
+                    : null;
+                const noCost = p.totalCost === 0 && p.totalRevenue > 0;
+                return (
+                  <tr key={p.key}>
+                    <td
+                      style={{
+                        ...td,
+                        textAlign: "left",
+                        fontFamily: "inherit",
+                        color: "var(--t1)",
+                        maxWidth: 260,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {p.name}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        textAlign: "left",
+                        fontFamily: "inherit",
+                        fontSize: 11,
+                        color: "var(--t3)",
+                      }}
+                    >
+                      {p.option}
+                    </td>
+                    <td style={td}>{p.soldQty}</td>
+                    <td style={td}>{fmt$(p.totalRevenue)}</td>
+                    <td style={td}>
+                      {noCost ? (
+                        <span style={{ color: "var(--wn)", fontSize: 10 }}>
+                          無成本
+                        </span>
+                      ) : (
+                        fmt$(p.profitContribution)
+                      )}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        fontWeight: 700,
+                        color: noCost
+                          ? "var(--t4)"
+                          : gm >= 0.45
+                          ? "var(--up)"
+                          : gm >= 0.3
+                          ? "var(--wn)"
+                          : "var(--dn)",
+                      }}
+                    >
+                      {noCost || gm === null ? "—" : pct(gm)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 訂單 */}
+      <div className="f0" style={posCard}>
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: "var(--t1)",
+            marginBottom: 12,
+          }}
+        >
+          訂單明細（{data.orderList.length} 筆）
+        </div>
+        <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+          <table
+            style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}
+          >
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: "left" }}>日期</th>
+                <th style={{ ...th, textAlign: "left" }}>通路</th>
+                <th style={{ ...th, textAlign: "left" }}>備註</th>
+                <th style={th}>營收</th>
+                <th style={th}>成本</th>
+                <th style={th}>毛利率</th>
+                <th style={th}>淨利</th>
+                <th style={th}>發票</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.orderList.slice(0, 100).map((o) => {
+                const gm = o.revenue > 0 ? o.gp / o.revenue : 0;
+                /* 毛利率高得不合理＝多半是開單沒選規格（總價打在數量 1 上） */
+                const suspect = !o.missCost && gm > 0.85;
+                return (
+                  <tr
+                    key={o.orderId}
+                    style={{
+                      background: o.net < 0 ? "var(--row-loss)" : "transparent",
+                    }}
+                  >
+                    <td
+                      style={{
+                        ...td,
+                        textAlign: "left",
+                        fontSize: 11,
+                      }}
+                    >
+                      {String(o.date).slice(5)}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        textAlign: "left",
+                        fontFamily: "inherit",
+                        fontSize: 11,
+                        color:
+                          o.channel === "dealer" ? accentColor : "var(--t2)",
+                        fontWeight: o.channel === "dealer" ? 700 : 400,
+                      }}
+                    >
+                      {o.channelLabel}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        textAlign: "left",
+                        fontFamily: "inherit",
+                        fontSize: 11,
+                        color: "var(--t3)",
+                        maxWidth: 120,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {o.remark || "—"}
+                    </td>
+                    <td style={td}>{fmt$(o.revenue)}</td>
+                    <td style={td}>
+                      {o.missCost ? (
+                        <span style={{ color: "var(--wn)", fontSize: 10 }}>
+                          缺
+                        </span>
+                      ) : (
+                        fmt$(o.oCost)
+                      )}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        fontWeight: 700,
+                        color: o.missCost
+                          ? "var(--t4)"
+                          : suspect
+                          ? "var(--wn)"
+                          : gm >= 0.45
+                          ? "var(--up)"
+                          : gm >= 0.3
+                          ? "var(--wn)"
+                          : "var(--dn)",
+                      }}
+                      title={
+                        suspect
+                          ? "毛利率異常高：可能是開單沒選克數規格（總價打在數量 1 上）"
+                          : undefined
+                      }
+                    >
+                      {o.missCost ? "—" : pct(gm)}
+                      {suspect && (
+                        <span style={{ color: "var(--wn)", marginLeft: 3 }}>
+                          ⚠
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      style={{
+                        ...td,
+                        color: o.net >= 0 ? "var(--t2)" : "var(--dn)",
+                      }}
+                    >
+                      {o.missCost ? "—" : fmt$(o.net)}
+                    </td>
+                    <td style={{ ...td, fontSize: 10 }}>
+                      {o.hasInvoice ? (
+                        <span style={{ color: "var(--up)" }}>已開</span>
+                      ) : (
+                        <span style={{ color: "var(--t4)" }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
 
 /* ─── Overview Dashboard ────────────────────────────────────── */
 function OverviewDashboard({
@@ -2382,6 +2909,207 @@ const spOrderFin = (order, fp, costsMap) => {
   };
 };
 
+/* ─── 門市 POS 單筆損益 ────────────────────────────────────────
+   門市無平台抽成：毛利＝營收−商品成本；營業費沿用內部 %；
+   稅只對「有開發票」的單課徵（老闆 2026-08-18 定案）。         */
+const posOrderFin = (order, fp, costsMap) => {
+  const st = safeText(order.status);
+  const isCanc = st.includes("取消") || st.includes("退款") || st.includes("已退");
+  const gross = numOrZero(order.revenue);
+  const ofp = order.snapshotFeeParams;
+  const opEx =
+    ofp?.opExpense != null
+      ? Number(ofp.opExpense) || 0
+      : parseFloat(fp.opExpense) || 0;
+  const tx =
+    ofp?.tax != null ? Number(ofp.tax) || 0 : parseFloat(fp.tax) || 0;
+  let oCost = 0;
+  let missCost = false;
+  (order.items || []).forEach((item) => {
+    const has =
+      Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
+      item.snapshotCost !== null;
+    const unit = has ? Number(item.snapshotCost) || 0 : Number(costsMap[item.key]) || 0;
+    if (!has && !(Number(costsMap[item.key]) > 0)) missCost = true;
+    oCost += unit * (item.qty || 1);
+  });
+  const gp = gross - oCost;
+  const opAmt = gross * (opEx / 100);
+  const txAmt = order.hasInvoice ? gross * (tx / 100) : 0;
+  return {
+    isCanc,
+    isTest: gross > 0 && gross <= POS_TEST_MAX,
+    gross,
+    oCost,
+    gp,
+    opAmt,
+    txAmt,
+    missCost,
+    finalNet: gp - opAmt - txAmt,
+    opEx,
+    tx,
+  };
+};
+
+/* ─── 門市 POS：商品名＋選項 → 配方（自動對應規則引擎） ────────
+   三條鐵則（見 利潤決策中心\門市POS成本對應-交接.md）：
+   ① 名稱含「公版」→ 公版茶葉分類  ② 含「禮盒茶」→ 禮盒專用茶葉
+   ③ 其餘散茶 → 官網茶葉分類。規格 二兩=75g／四兩=150g。      */
+const POS_SHELL_RECIPES = {
+  品牌茶葉禮盒: [
+    ["禮盒體(品牌/福悠然)", 1], ["內襯(品牌/福悠然)", 1], ["提袋(品牌禮盒)", 1],
+    ["吊牌(品牌)", 1], ["介紹卡(品牌)", 1], ["沖泡小卡", 1], ["茶罐(單罐)", 2],
+  ],
+  福悠然茶葉禮盒: [
+    ["禮盒體(品牌/福悠然)", 1], ["內襯(品牌/福悠然)", 1], ["提袋(福悠然)", 1],
+    ["吊牌(福悠然)", 1], ["介紹卡(福悠然)", 1], ["沖泡小卡", 1], ["茶罐(單罐)", 2],
+  ],
+  "拾光茶信禮盒-含原葉茶包": [
+    ["禮盒體(茶信)", 1], ["提袋(茶信)", 1], ["介紹卡(茶信/朝霞)", 1],
+    ["沖泡小卡", 1], ["茶罐(單罐)", 1],
+    ["悠悠紅玉立體茶包(1包·含茶葉)", 2], ["奶香金萱立體茶包(1包·含茶葉)", 2],
+    ["暮暮觀音立體茶包(1包·含茶葉)", 2], ["醇翠烏龍立體茶包(1包·含茶葉)", 2],
+  ],
+  暖心茶山禮盒: [
+    ["禮盒體(暖心茶山小)", 1], ["提袋(暖心茶山小)", 1], ["介紹卡(暖心茶山)", 1],
+    ["沖泡小卡", 1], ["茶罐(單罐)", 2],
+  ],
+  朝霞映春禮盒: [
+    ["禮盒體(朝霞映春·含內襯)", 1], ["過年提袋(朝霞)", 1], ["紅茶外盒+標籤(朝霞)", 1],
+    ["介紹卡(茶信/朝霞)", 1], ["沖泡小卡", 1], ["茶罐(單罐)", 1],
+  ],
+  "暖心茶山禮盒(大禹嶺茶包)": [
+    ["禮盒體(暖心茶山小)", 1], ["提袋(暖心茶山小)", 1], ["介紹卡(暖心茶山)", 1],
+    ["沖泡小卡", 1], ["茶罐(單罐)", 2], ["大禹嶺茶包(1包)", 10],
+  ],
+  "暖心茶山禮盒(福壽山、焙烏龍、紅茶包)": [
+    ["禮盒體(暖心茶山小)", 1], ["提袋(暖心茶山小)", 1], ["介紹卡(暖心茶山)", 1],
+    ["沖泡小卡", 1], ["茶罐(單罐)", 2],
+    ["福壽山茶包(1包)", 4], ["焙烏龍茶包(1包)", 3], ["華崗紅茶茶包(1包·含茶葉)", 3],
+  ],
+};
+const POS_GIFT_TEA = {
+  福壽山: "福壽山150g(禮盒款)",
+  大禹嶺: "大禹嶺150g(禮盒款)",
+  梨山: "翠峰150g(禮盒款)",
+  阿里山: "阿里山150g(禮盒款)",
+};
+const POS_COLD_TEA = {
+  悠悠紅玉: "悠悠紅玉立體茶包(1包·含茶葉)",
+  奶香金萱: "奶香金萱立體茶包(1包·含茶葉)",
+  暮暮觀音: "暮暮觀音立體茶包(1包·含茶葉)",
+  醇翠烏龍: "醇翠烏龍立體茶包(1包·含茶葉)",
+};
+/* 規格字串 → 克數（二兩=75、四兩=150；也吃「75g」「150g」直寫） */
+const posGramOf = (option) => {
+  const o = String(option || "");
+  if (o.includes("二兩")) return 75;
+  if (o.includes("四兩")) return 150;
+  const m = o.match(/(\d+)\s*g/i);
+  if (m) return parseInt(m[1], 10);
+  return null;
+};
+const buildPosRecipe = (name, option, components) => {
+  const compEntries = Object.entries(components || {});
+  const byExact = (nm) => compEntries.find(([, c]) => c.name === nm)?.[0] || null;
+  const lines = (pairs) => {
+    const out = [];
+    for (const [nm, q] of pairs) {
+      const id = byExact(nm);
+      if (!id) return null;
+      out.push({ compId: id, qty: q });
+    }
+    return out;
+  };
+  const n = String(name || "").trim();
+  const opt = String(option || "").trim();
+
+  /* 禮盒包裝／茶葉禮盒加購（改名前後都吃） */
+  if (n.includes("禮盒包裝") || n.includes("茶葉禮盒加購")) {
+    const pairs = POS_SHELL_RECIPES[opt];
+    return pairs ? lines(pairs) : null;
+  }
+  /* 禮盒茶（150g罐）：選項＝款式 */
+  if (n.includes("禮盒茶")) {
+    const nm = POS_GIFT_TEA[opt];
+    const id = nm ? byExact(nm) : null;
+    return id ? [{ compId: id, qty: 1 }] : null;
+  }
+  /* 冷泡茶：空罐＋立體茶包 */
+  if (n.includes("冷泡茶")) {
+    const can = byExact("冷泡茶罐(空罐)");
+    const teaNm = POS_COLD_TEA[opt];
+    const tea = teaNm ? byExact(teaNm) : null;
+    return can && tea ? [{ compId: can, qty: 1 }, { compId: tea, qty: 1 }] : null;
+  }
+  /* 30 入盒裝茶包：「XX茶包｜經典好茶」＝平面單包×30＋對應外盒 */
+  if (/茶包｜經典好茶/.test(n)) {
+    const base = n.replace(/｜經典好茶.*$/, "").trim();
+    const pack = compEntries.find(
+      ([, c]) => c.cat === "茶包單包" && c.name.startsWith(base)
+    );
+    const box = compEntries.find(
+      ([, c]) => c.cat === "外盒" && c.name.startsWith(base) && c.name.includes("外盒")
+    );
+    if (pack)
+      return box
+        ? [{ compId: pack[0], qty: 30 }, { compId: box[0], qty: 1 }]
+        : [{ compId: pack[0], qty: 30 }];
+    return null;
+  }
+  /* 公版散茶：完全同名優先；否則用「公版{品項}-」前綴＋規格克數比對
+     （POS 可能只打「公版華崗」，庫裡是「公版華崗-邱高翠｜75g」） */
+  if (n.includes("公版")) {
+    const exact = byExact(n);
+    if (exact) return [{ compId: exact, qty: 1 }];
+    const base = n.replace(/｜.*$/, "").trim();
+    const g = posGramOf(opt) || posGramOf(n);
+    const pool = compEntries.filter(
+      ([, c]) =>
+        c.cat === "公版茶葉" &&
+        (c.name === base ||
+          c.name.startsWith(`${base}-`) ||
+          c.name.startsWith(`${base}｜`))
+    );
+    if (!pool.length) return null;
+    const hit = g ? pool.find(([, c]) => c.name.endsWith(`｜${g}g`)) : null;
+    const pick = hit || (pool.length === 1 ? pool[0] : null);
+    return pick ? [{ compId: pick[0], qty: 1 }] : null;
+  }
+  /* 品牌茶罐 */
+  if (n.includes("茶罐")) {
+    const id = byExact("茶罐(單罐)");
+    return id ? [{ compId: id, qty: 1 }] : null;
+  }
+  /* 單包／大份量茶包：選項＝茶包款式 */
+  if (n.includes("單包茶包") || n.includes("大份量茶包")) {
+    const id =
+      compEntries.find(
+        ([, c]) => c.cat === "茶包單包" && opt && c.name.startsWith(opt)
+      )?.[0] || null;
+    return id ? [{ compId: id, qty: 1 }] : null;
+  }
+  /* 一般散茶：用規格克數找官網茶葉組件（排除禮盒款／公版） */
+  const g = posGramOf(opt);
+  if (g) {
+    const base = n.replace(/^品牌｜/, "").replace(/｜.*$/, "").trim();
+    const hit = compEntries.find(
+      ([, c]) =>
+        c.cat === "茶葉" &&
+        c.name === `${base}${g}g`
+    );
+    if (hit) return [{ compId: hit[0], qty: 1 }];
+    const loose = compEntries.find(
+      ([, c]) =>
+        c.cat === "茶葉" &&
+        c.name.endsWith(`${g}g`) &&
+        (c.name.startsWith(base) || base.includes(c.name.replace(`${g}g`, "")))
+    );
+    if (loose) return [{ compId: loose[0], qty: 1 }];
+  }
+  return null;
+};
+
 /* ─── 期間比較（環比／同比） ─────────────────────────────────── */
 const CmpVal = ({ label, cur, prev }) => {
   let txt, c;
@@ -2705,6 +3433,12 @@ function ProfitCenter() {
   const [components, setComponents] = useState(() => gl(SK.components, {}));
   const [slRecipes, setSlRecipes] = useState(() => gl(SK.slRecipes, {}));
   const [spRecipes, setSpRecipes] = useState(() => gl(SK.spRecipes, {}));
+  const [posOrders, setPosOrders] = useState(() => gl(SK.posOrders, {}));
+  const [posCosts, setPosCosts] = useState(() => gl(SK.posCosts, {}));
+  const [posRecipes, setPosRecipes] = useState(() => gl(SK.posRecipes, {}));
+  /* 門市匯入：兩份 xls 分次拖入，先進暫存區、湊齊再 join */
+  const posStage = useRef({ trans: null, orders: null });
+  const [posExcludeDealer, setPosExcludeDealer] = useState(false);
 
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
@@ -2744,6 +3478,7 @@ function ProfitCenter() {
   const firstMissRef = useRef(null);
   const prevSlMonthlyHashes = useRef({});
   const prevSpMonthlyHashes = useRef({});
+  const prevPosMonthlyHashes = useRef({});
   const migrating = useRef(false);
   const applying = useRef(false);
   const sTimer = useRef(null);
@@ -2751,6 +3486,7 @@ function ProfitCenter() {
   const lRMeta = useRef(0);
   const lRSl = useRef(0);
   const lRSp = useRef(0);
+  const lRPos = useRef(0);
   const lL = useRef(0);
   const meta = useRef({
     clientId: typeof window !== "undefined" ? gcid() : "",
@@ -2831,6 +3567,15 @@ function ProfitCenter() {
   useEffect(() => {
     persist(SK.spRecipes, spRecipes);
   }, [spRecipes, persist]);
+  useEffect(() => {
+    persist(SK.posOrders, posOrders);
+  }, [posOrders, persist]);
+  useEffect(() => {
+    persist(SK.posCosts, posCosts);
+  }, [posCosts, persist]);
+  useEffect(() => {
+    persist(SK.posRecipes, posRecipes);
+  }, [posRecipes, persist]);
 
   /* Firebase init */
   useEffect(() => {
@@ -2854,6 +3599,7 @@ function ProfitCenter() {
       );
       fRef.current._slMonthlyColl = collection(db, SL_MONTHLY_COLL);
       fRef.current._spMonthlyColl = collection(db, SP_MONTHLY_COLL);
+      fRef.current._posMonthlyColl = collection(db, POS_MONTHLY_COLL);
       setSync("connecting");
       const un = onAuthStateChanged(auth, async (u) => {
         try {
@@ -3064,6 +3810,8 @@ function ProfitCenter() {
             if (metaData.components) setComponents(metaData.components);
             if (metaData.slRecipes) setSlRecipes(metaData.slRecipes);
             if (metaData.spRecipes) setSpRecipes(metaData.spRecipes);
+            if (metaData.posCosts) setPosCosts(metaData.posCosts);
+            if (metaData.posRecipes) setPosRecipes(metaData.posRecipes);
             lRMeta.current = rMs;
             lL.current = rMs;
             setLastSyncAt(Date.now());
@@ -3165,10 +3913,50 @@ function ProfitCenter() {
       (err) => console.error("[SP Monthly Snapshot Error]", err)
     );
 
+    // 門市月份 collection 監聽
+    let posFirstLoad = true;
+    const unPos = onSnapshot(
+      fRef.current._posMonthlyColl,
+      (snapshot) => {
+        try {
+          const all = {};
+          let maxMs = 0;
+          snapshot.forEach((docSnap) => {
+            const d = docSnap.data();
+            if (d?.ordersJson) {
+              try {
+                Object.assign(all, JSON.parse(d.ordersJson));
+              } catch {}
+            }
+            const m = Number(d?.updatedAtMs || 0);
+            if (m > maxMs) maxMs = m;
+            prevPosMonthlyHashes.current[docSnap.id] = d?.ordersJson || "";
+          });
+          if (
+            posFirstLoad ||
+            (maxMs > lRPos.current && maxMs > lL.current && !applying.current)
+          ) {
+            posFirstLoad = false;
+            applying.current = true;
+            setPosOrders(all);
+            if (maxMs > lRPos.current) lRPos.current = maxMs;
+            setLastSyncAt(Date.now());
+            setTimeout(() => {
+              applying.current = false;
+            }, 50);
+          }
+        } catch (e) {
+          console.error("[POS Monthly Snapshot Error]", e);
+        }
+      },
+      (err) => console.error("[POS Monthly Snapshot Error]", err)
+    );
+
     return () => {
       unMeta();
       unSl();
       unSp();
+      unPos();
     };
     // 監聽器只在登入完成時建立一次；slOrders/spOrders 僅供一次性遷移讀取
     // eslint-disable-next-line
@@ -3194,12 +3982,15 @@ function ProfitCenter() {
           components,
           slRecipes,
           spRecipes,
+          posCosts,
+          posRecipes,
           updatedAtMs: ms,
           updatedBy: meta.current.clientId,
         });
 
         const slByMonth = groupOrdersByMonth(slOrders);
         const spByMonth = groupOrdersByMonth(spOrders);
+        const posByMonth = groupOrdersByMonth(posOrders);
 
         const writes = [
           setDoc(
@@ -3256,6 +4047,26 @@ function ProfitCenter() {
           }
         });
 
+        // 門市：只寫有變動的月份
+        Object.entries(posByMonth).forEach(([ym, orders]) => {
+          const json = JSON.stringify(orders);
+          if (prevPosMonthlyHashes.current[ym] === json) return;
+          prevPosMonthlyHashes.current[ym] = json;
+          writes.push(
+            setDoc(doc(db, POS_MONTHLY_COLL, ym), {
+              ordersJson: json,
+              count: Object.keys(orders).length,
+              updatedAtMs: ms,
+            })
+          );
+        });
+        Object.keys(prevPosMonthlyHashes.current).forEach((ym) => {
+          if (!posByMonth[ym]) {
+            delete prevPosMonthlyHashes.current[ym];
+            writes.push(deleteDoc(doc(db, POS_MONTHLY_COLL, ym)));
+          }
+        });
+
         await Promise.all(writes);
         lL.current = ms;
         setLastSyncAt(Date.now());
@@ -3277,6 +4088,9 @@ function ProfitCenter() {
     components,
     slRecipes,
     spRecipes,
+    posOrders,
+    posCosts,
+    posRecipes,
     aReady,
     cReady,
   ]);
@@ -3628,6 +4442,193 @@ function ProfitCenter() {
     toast(`已匯入 ${count} 筆蝦皮訂單`, { type: "success" });
   };
 
+  /* ─── 門市 POS 解析（交易明細＋POS訂單明細，兩份 join） ────── */
+  const posHeaderIdx = (head) => {
+    const idx = {};
+    head.forEach((h, i) => {
+      const t = safeText(h).replace(/\s/g, "");
+      if (t.includes("訂單號碼")) idx.orderId = i;
+      else if (t.includes("交易號碼")) idx.txId = i;
+      else if (t.includes("交易類別")) idx.txType = i;
+      else if (t.includes("交易日期")) idx.txDate = i;
+      else if (t.includes("訂單日期")) idx.orderDate = i;
+      else if (t.includes("訂單狀態")) idx.status = i;
+      else if (t.includes("付款方式")) idx.payMethod = i;
+      else if (t.includes("訂單合計")) idx.total = i;
+      else if (t.includes("交易備註")) idx.remark = i;
+      else if (t.includes("統一編號")) idx.taxId = i;
+      else if (t.includes("發票號碼")) idx.invoiceNo = i;
+      else if (t.includes("商品名稱")) idx.prodName = i;
+      else if (t === "選項") idx.option = i;
+      else if (t.includes("商品結帳價")) idx.price = i;
+      else if (t === "數量") idx.qty = i;
+    });
+    return idx;
+  };
+
+  const processPOSParsed = (rows, fileName) => {
+    if (!Array.isArray(rows) || rows.length < 2) {
+      toast("門市報表格式錯誤", { type: "error" });
+      return;
+    }
+    const idx = posHeaderIdx(rows[0]);
+    const isTrans = idx.payMethod > -1 && idx.prodName === undefined;
+    const isOrders = idx.prodName > -1;
+    if (!isTrans && !isOrders) {
+      toast("認不出這份門市報表（需含「付款方式」或「商品名稱」欄）", {
+        type: "error",
+        duration: 7000,
+      });
+      return;
+    }
+    posStage.current[isTrans ? "trans" : "orders"] = { rows, idx };
+    const have = posStage.current;
+    if (!have.trans || !have.orders) {
+      toast(
+        `已讀取${isTrans ? "交易明細" : "POS訂單明細"}，請再拖入另一份${
+          isTrans ? "POS訂單明細" : "交易明細"
+        }`,
+        { type: "info", duration: 6000 }
+      );
+      return;
+    }
+
+    /* 1) 交易明細 → 每張訂單的通路/發票/備註（結清為主、退貨標記） */
+    const tIdx = have.trans.idx;
+    const head = {};
+    for (let i = 1; i < have.trans.rows.length; i++) {
+      const r = have.trans.rows[i];
+      if (!r || !r.length) continue;
+      const oid = safeText(r[tIdx.orderId]).replace(/^#/, "");
+      if (!oid) continue;
+      const txType = safeText(r[tIdx.txType]);
+      const isRefund = txType.includes("退貨") || txType.includes("退款");
+      const rec =
+        head[oid] ||
+        (head[oid] = {
+          payMethod: "",
+          date: "",
+          remark: "",
+          taxId: "",
+          hasInvoice: false,
+          refunded: false,
+          status: "",
+          total: 0,
+        });
+      if (isRefund) {
+        rec.refunded = true;
+        continue;
+      }
+      rec.payMethod = safeText(r[tIdx.payMethod]) || rec.payMethod;
+      rec.date = normDate(safeText(r[tIdx.txDate])) || rec.date;
+      rec.remark = safeText(r[tIdx.remark]) || rec.remark;
+      rec.taxId = safeText(r[tIdx.taxId]) || rec.taxId;
+      rec.status = safeText(r[tIdx.status]) || rec.status;
+      rec.total = numOrZero(r[tIdx.total]) || rec.total;
+      if (safeText(r[tIdx.invoiceNo])) rec.hasInvoice = true;
+    }
+
+    /* 2) 訂單明細 → 商品行 */
+    const oIdx = have.orders.idx;
+    const built = {};
+    for (let i = 1; i < have.orders.rows.length; i++) {
+      const r = have.orders.rows[i];
+      if (!r || !r.length) continue;
+      const oid = safeText(r[oIdx.orderId]).replace(/^#/, "");
+      const nm = safeText(r[oIdx.prodName]);
+      if (!oid || !nm) continue;
+      const opt = safeText(r[oIdx.option]);
+      const total = numOrZero(r[oIdx.total]);
+      if (!built[oid])
+        built[oid] = {
+          orderId: oid,
+          revenue: 0,
+          status: safeText(r[oIdx.status]),
+          orderDate: normDate(safeText(r[oIdx.orderDate])),
+          items: [],
+        };
+      if (total > 0 && !built[oid].revenue) built[oid].revenue = total;
+      built[oid].items.push({
+        key: `${nm}_${opt}`,
+        name: nm,
+        option: opt,
+        qty: parseInt(r[oIdx.qty], 10) || 1,
+        price: numOrZero(r[oIdx.price]),
+      });
+    }
+
+    /* 3) join：以訂單號碼串起來 */
+    const orphanTrans = [];
+    const newOrders = {};
+    Object.entries(head).forEach(([oid, h]) => {
+      const b = built[oid];
+      if (!b) {
+        orphanTrans.push(oid);
+        return;
+      }
+      const st = `${b.status || h.status}${h.refunded ? " 已退款" : ""}`;
+      newOrders[oid] = {
+        orderId: oid,
+        date: h.date || b.orderDate || "",
+        status: st,
+        channel: posChannelOf(h.payMethod),
+        payMethod: h.payMethod,
+        hasInvoice: h.hasInvoice,
+        taxId: h.taxId,
+        remark: h.remark,
+        revenue: b.revenue || h.total || 0,
+        items: b.items,
+      };
+    });
+
+    /* 4) 自動建配方：對沒有配方的商品鍵套規則引擎 */
+    const autoR = {};
+    const unmatched = [];
+    Object.values(newOrders).forEach((o) =>
+      o.items.forEach((it) => {
+        if (posRecipes[it.key] || autoR[it.key]) return;
+        const lines = buildPosRecipe(it.name, it.option, components);
+        if (lines && lines.length) autoR[it.key] = lines;
+        else if (!unmatched.includes(it.key)) unmatched.push(it.key);
+      })
+    );
+    if (Object.keys(autoR).length)
+      setPosRecipes((p) => ({ ...autoR, ...p }));
+
+    setPosOrders((p) => {
+      const merged = { ...p };
+      Object.values(newOrders).forEach((o) => {
+        merged[o.orderId] = withOldSnapshot(merged[o.orderId], o);
+      });
+      return merged;
+    });
+
+    const dates = Object.values(newOrders)
+      .map((o) => String(o.date))
+      .filter(Boolean)
+      .sort()
+      .reverse();
+    if (dates.length) {
+      setSY(dates[0].substring(0, 4));
+      setSM(dates[0].substring(5, 7));
+    }
+    posStage.current = { trans: null, orders: null };
+    const n = Object.keys(newOrders).length;
+    let msg = `已匯入 ${n} 筆門市訂單`;
+    if (Object.keys(autoR).length)
+      msg += `，自動對應 ${Object.keys(autoR).length} 項成本`;
+    if (unmatched.length) msg += `；${unmatched.length} 項無成本資料`;
+    if (orphanTrans.length)
+      msg += `；${orphanTrans.length} 張交易在訂單明細中找不到（訂單明細日期範圍請往前多抓一個月）`;
+    toast(msg, {
+      type: unmatched.length || orphanTrans.length ? "warning" : "success",
+      duration: 9000,
+    });
+    if (unmatched.length)
+      console.warn("[POS] 無法自動對應成本的商品：", unmatched);
+    if (orphanTrans.length) console.warn("[POS] join 不到的交易：", orphanTrans);
+  };
+
   const processFile = (f) => {
     if (!f) return;
     const fname = f.name.toLowerCase();
@@ -3646,11 +4647,14 @@ function ProfitCenter() {
           raw: false,
         });
         const rows = j.map((r) => r.map((c) => String(c)));
-        if (platform === "shopline") processSLParsed(rows);
+        if (platform === "pos") processPOSParsed(rows, f.name);
+        else if (platform === "shopline") processSLParsed(rows);
         else processSPParsed(rows);
       } else {
-        if (platform === "shopline") processSLParsed(parseCSV(d2));
-        else processSPParsed(parseCSV(d2));
+        const rows = parseCSV(d2);
+        if (platform === "pos") processPOSParsed(rows, f.name);
+        else if (platform === "shopline") processSLParsed(rows);
+        else processSPParsed(rows);
       }
     };
     rd.onload = (ev) => {
@@ -3676,7 +4680,9 @@ function ProfitCenter() {
   };
 
   const handleFile = (e) => {
-    processFile(e.target.files?.[0]);
+    /* 門市要吃兩份 xls：一次選兩個也支援，依序解析 */
+    const fs = Array.from(e.target.files || []);
+    fs.forEach((f, i) => setTimeout(() => processFile(f), i * 60));
     e.target.value = "";
   };
 
@@ -3705,8 +4711,162 @@ function ProfitCenter() {
     () => resolveCosts(spCosts, spRecipes, components),
     [spCosts, spRecipes, components]
   );
+  const posEffCosts = useMemo(
+    () => resolveCosts(posCosts, posRecipes, components),
+    [posCosts, posRecipes, components]
+  );
 
   /* ─── Shopline Data Processing ────────────────────────────── */
+  /* ─── 門市 POS 期間彙總 ─────────────────────────────────────── */
+  const posData = useMemo(() => {
+    const all = Object.values(posOrders);
+    if (!all.length) return null;
+    const years = [...new Set(all.map((o) => String(o.date).substring(0, 4)))]
+      .filter(Boolean)
+      .sort()
+      .reverse();
+    const t = {
+      rev: 0,
+      cost: 0,
+      gp: 0,
+      net: 0,
+      opExpTotal: 0,
+      taxTotal: 0,
+      valid: 0,
+      rawTotal: 0,
+      cancelledTotal: 0,
+      testTotal: 0,
+      testCount: 0,
+      noCostRev: 0,
+      noCostCount: 0,
+      invoiceRev: 0,
+      totalQty: 0,
+      coveredRev: 0,
+      coveredGp: 0,
+      coveredNet: 0,
+    };
+    const byChannel = {};
+    POS_CHANNELS.forEach((c) => {
+      byChannel[c.key] = {
+        key: c.key,
+        label: c.label,
+        rev: 0,
+        cost: 0,
+        gp: 0,
+        net: 0,
+        orders: 0,
+        qty: 0,
+        noCostRev: 0,
+        invoiceRev: 0,
+        coveredRev: 0,
+        coveredGp: 0,
+        coveredNet: 0,
+      };
+    });
+    const mm = {};
+    const ol = [];
+    all.forEach((order) => {
+      if (!inPeriod(order.date)) return;
+      const fin = posOrderFin(order, slFp, posEffCosts);
+      t.rawTotal += fin.gross;
+      if (fin.isCanc) {
+        t.cancelledTotal += fin.gross;
+        return;
+      }
+      if (fin.isTest) {
+        t.testTotal += fin.gross;
+        t.testCount++;
+        return;
+      }
+      if (posExcludeDealer && order.channel === "dealer") return;
+      const ch = byChannel[order.channel] || byChannel.retail;
+      order.items.forEach((it) => {
+        const has =
+          Object.prototype.hasOwnProperty.call(it, "snapshotCost") &&
+          it.snapshotCost !== null;
+        const unit = has
+          ? Number(it.snapshotCost) || 0
+          : Number(posEffCosts[it.key]) || 0;
+        const ir = (Number(it.price) || 0) * (it.qty || 1);
+        const ic = unit * (it.qty || 1);
+        t.totalQty += it.qty || 1;
+        ch.qty += it.qty || 1;
+        if (!mm[it.key])
+          mm[it.key] = {
+            key: it.key,
+            name: it.name,
+            option: it.option || "標準規格",
+            soldQty: 0,
+            profitContribution: 0,
+            totalRevenue: 0,
+            totalCost: 0,
+          };
+        mm[it.key].soldQty += it.qty || 1;
+        mm[it.key].totalRevenue += ir;
+        mm[it.key].totalCost += ic;
+        mm[it.key].profitContribution += ir - ic;
+      });
+      t.rev += fin.gross;
+      t.cost += fin.oCost;
+      t.gp += fin.gp;
+      t.net += fin.finalNet;
+      t.opExpTotal += fin.opAmt;
+      t.taxTotal += fin.txAmt;
+      t.valid++;
+      if (fin.missCost) {
+        t.noCostRev += fin.gross;
+        t.noCostCount++;
+        ch.noCostRev += fin.gross;
+      } else {
+        /* 毛利率只用「成本齊全」的訂單當分母，否則會被無成本單灌成虛高 */
+        t.coveredRev += fin.gross;
+        t.coveredGp += fin.gp;
+        t.coveredNet += fin.finalNet;
+        ch.coveredRev += fin.gross;
+        ch.coveredGp += fin.gp;
+        ch.coveredNet += fin.finalNet;
+      }
+      if (order.hasInvoice) {
+        t.invoiceRev += fin.gross;
+        ch.invoiceRev += fin.gross;
+      }
+      ch.rev += fin.gross;
+      ch.cost += fin.oCost;
+      ch.gp += fin.gp;
+      ch.net += fin.finalNet;
+      ch.orders++;
+      ol.push({
+        ...order,
+        oCost: fin.oCost,
+        gp: fin.gp,
+        opx: fin.opAmt,
+        taxAmt: fin.txAmt,
+        net: fin.finalNet,
+        missCost: fin.missCost,
+        channelLabel: posChannelLabel(order.channel),
+      });
+    });
+    ol.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    const covered = t.rev - t.noCostRev;
+    return {
+      years,
+      orderList: ol,
+      matrixList: Object.values(mm).sort((a, b) => b.soldQty - a.soldQty),
+      channels: POS_CHANNELS.map((c) => byChannel[c.key]).filter(
+        (c) => c.rev > 0 || c.orders > 0
+      ),
+      summary: {
+        ...t,
+        /* 毛利／淨利率一律用「成本齊全」的訂單當基數 */
+        grossMargin: t.coveredRev > 0 ? t.coveredGp / t.coveredRev : 0,
+        netMargin: t.coveredRev > 0 ? t.coveredNet / t.coveredRev : 0,
+        aov: t.valid > 0 ? t.rev / t.valid : 0,
+        costCoverage: t.rev > 0 ? covered / t.rev : 0,
+        invoiceRate: t.rev > 0 ? t.invoiceRev / t.rev : 0,
+      },
+    };
+  }, [posOrders, posEffCosts, slFp, inPeriod, posExcludeDealer]);
+
   const slData = useMemo(() => {
     const all = Object.values(slOrders);
     if (!all.length) return null;
@@ -4049,17 +5209,30 @@ function ProfitCenter() {
   /* ─── Derived state ────────────────────────────────────────── */
   const isOverview = platform === "overview";
   const isSL = platform === "shopline";
-  const costs = isSL ? slCosts : spCosts;
-  const setCosts = isSL ? setSlCosts : setSpCosts;
-  const costsEff = isSL ? slEffCosts : spEffCosts;
-  const recipes = isSL ? slRecipes : spRecipes;
-  const setRecipes = isSL ? setSlRecipes : setSpRecipes;
-  const currentData = isSL ? slData : isOverview ? null : spData;
+  const isPOS = platform === "pos";
+  const costs = isPOS ? posCosts : isSL ? slCosts : spCosts;
+  const setCosts = isPOS ? setPosCosts : isSL ? setSlCosts : setSpCosts;
+  const costsEff = isPOS ? posEffCosts : isSL ? slEffCosts : spEffCosts;
+  const recipes = isPOS ? posRecipes : isSL ? slRecipes : spRecipes;
+  const setRecipes = isPOS ? setPosRecipes : isSL ? setSlRecipes : setSpRecipes;
+  const currentData = isPOS
+    ? posData
+    : isSL
+    ? slData
+    : isOverview
+    ? null
+    : spData;
   const aY = isOverview
-    ? [...new Set([...(slData?.years || []), ...(spData?.years || [])])]
+    ? [
+        ...new Set([
+          ...(slData?.years || []),
+          ...(spData?.years || []),
+          ...(posData?.years || []),
+        ]),
+      ]
         .sort()
         .reverse()
-    : (isSL ? slData : spData)?.years || [];
+    : (isPOS ? posData : isSL ? slData : spData)?.years || [];
   const aM = isOverview
     ? sY !== "All" && sY !== "Custom"
       ? [
@@ -4071,10 +5244,22 @@ function ProfitCenter() {
               ...Object.values(spOrders)
                 .filter((o) => String(o.date).startsWith(sY))
                 .map((o) => String(o.date).substring(5, 7)),
+              ...Object.values(posOrders)
+                .filter((o) => String(o.date).startsWith(sY))
+                .map((o) => String(o.date).substring(5, 7)),
             ].filter(Boolean)
           ),
         ].sort()
       : []
+    : isPOS
+    ? [
+        ...new Set(
+          Object.values(posOrders)
+            .filter((o) => sY === "All" || String(o.date).startsWith(sY))
+            .map((o) => String(o.date).substring(5, 7))
+            .filter(Boolean)
+        ),
+      ].sort()
     : (isSL ? slData : spData)?.months || [];
 
   useEffect(() => {
@@ -4799,9 +5984,21 @@ function ProfitCenter() {
   const slD = slData?.summary;
   const spS = spData?.s;
 
-  const accentColor = isSL ? "var(--accent)" : "var(--sp-accent)";
-  const accentDim = isSL ? "var(--accent-dim)" : "var(--sp-accent-dim)";
-  const accentBdr = isSL ? "var(--accent-bdr)" : "var(--sp-accent-bdr)";
+  const accentColor = isPOS
+    ? "var(--pos-accent)"
+    : isSL
+    ? "var(--accent)"
+    : "var(--sp-accent)";
+  const accentDim = isPOS
+    ? "var(--pos-accent-dim)"
+    : isSL
+    ? "var(--accent-dim)"
+    : "var(--sp-accent-dim)";
+  const accentBdr = isPOS
+    ? "var(--pos-accent-bdr)"
+    : isSL
+    ? "var(--accent-bdr)"
+    : "var(--sp-accent-bdr)";
 
   return (
     <div
@@ -4899,6 +6096,7 @@ function ProfitCenter() {
                 { id: "overview", label: "總覽" },
                 { id: "shopline", label: "官網" },
                 { id: "shopee", label: "蝦皮" },
+                { id: "pos", label: "門市" },
               ].map((p) => (
                 <button
                   key={p.id}
@@ -4914,6 +6112,8 @@ function ProfitCenter() {
                       platform === p.id
                         ? p.id === "overview"
                           ? "var(--blue)"
+                          : p.id === "pos"
+                          ? "var(--pos-accent)"
                           : accentColor
                         : "var(--s1)",
                     color: platform === p.id ? "#fff" : "var(--t2)",
@@ -5071,7 +6271,9 @@ function ProfitCenter() {
                 onDrop={(e) => {
                   e.preventDefault();
                   setDragOver(false);
-                  processFile(e.dataTransfer.files?.[0]);
+                  /* 門市可一次拖兩份（交易明細＋訂單明細），依序解析 */
+                  const fs = Array.from(e.dataTransfer.files || []);
+                  fs.forEach((f, i) => setTimeout(() => processFile(f), i * 60));
                 }}
                 style={{
                   border: `1.5px dashed ${
@@ -5091,6 +6293,7 @@ function ProfitCenter() {
                   }}
                   type="file"
                   accept=".csv,.xlsx,.xls"
+                  multiple={isPOS}
                   onChange={handleFile}
                   style={{ display: "none" }}
                 />
@@ -5103,10 +6306,10 @@ function ProfitCenter() {
                     color: "var(--t2)",
                   }}
                 >
-                  匯入{isSL ? "官網" : "蝦皮"}報表
+                  匯入{isPOS ? "門市" : isSL ? "官網" : "蝦皮"}報表
                 </div>
                 <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 2 }}>
-                  CSV · XLSX · 拖曳
+                  {isPOS ? "交易明細＋POS訂單明細（兩份）" : "CSV · XLSX · 拖曳"}
                 </div>
               </div>
               {currentData && (
@@ -5118,7 +6321,12 @@ function ProfitCenter() {
                     padding: "4px 2px",
                   }}
                 >
-                  {isSL ? slD?.valid : spS?.validN} 筆 ·{" "}
+                  {isPOS
+                    ? posData?.summary?.valid
+                    : isSL
+                    ? slD?.valid
+                    : spS?.validN}{" "}
+                  筆 ·{" "}
                   {sY === "All" ? "歷年" : sY === "Custom" ? "自訂區間" : sY}
                   {sM !== "All" && sY !== "Custom" ? `/${sM}` : ""}
                 </div>
@@ -5383,9 +6591,22 @@ function ProfitCenter() {
                   等待財務數據注入
                 </div>
                 <div style={{ fontSize: 12, color: "var(--t4)" }}>
-                  上傳{isSL ? "官網" : "蝦皮"}訂單報表以啟動分析
+                  {isPOS
+                    ? "拖入門市 POS 的「交易明細」＋「POS訂單明細」兩份報表"
+                    : `上傳${isSL ? "官網" : "蝦皮"}訂單報表以啟動分析`}
                 </div>
               </div>
+            ) : isPOS ? (
+              <POSDashboard
+                data={posData}
+                excludeDealer={posExcludeDealer}
+                onToggleDealer={setPosExcludeDealer}
+                accentColor={accentColor}
+                accentDim={accentDim}
+                accentBdr={accentBdr}
+                opExpense={parseFloat(slFp.opExpense) || 0}
+                taxRate={parseFloat(slFp.tax) || 0}
+              />
             ) : (
               <>
                 {/* 本期零筆提示：區分「沒匯資料/期間選錯」與「業績歸零」，
