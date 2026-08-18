@@ -100,6 +100,24 @@ const posChannelLabel = (key) =>
   POS_CHANNELS.find((c) => c.key === key)?.label || "現場零售";
 /* 測試單門檻：金額 ≤ 此值視為測試（LINE Pay 1 元那類），預設排除計算 */
 const POS_TEST_MAX = 10;
+/* 門市發票判定（老闆 2026-08-18）：POS 只對電子支付自動帶發票號碼；企業客戶常走 SHOPLINE
+   線上「新增獨立發票」自訂品名，POS 匯出裡沒有號碼——所以再看備註／統編／通路：
+   ① 有發票號碼 ② 交易明細填了統編 ③ 備註寫到「發票／公司戶／統編／三聯／二聯」
+   ④ 通路＝企業採購 或 合作通路（老闆 2026-08-18：這兩個通路都一定開發票）。
+   備註若寫「不開／免開／不用發票」則一律視為未開。
+   回傳 { has, src }，src 供畫面標示來源；另有逐單手動覆寫（invoiceOverride） */
+const POS_INVOICE_NEG = /(不|免|無|沒|未)\s*(用|需|要|開|開立|需要)?\s*(發票|三聯|統編)|(發票|三聯)\s*(不用|免|不開|不需)/;
+const POS_INVOICE_POS = /發票|公司戶|統編|三聯|二聯|invoice/i;
+const posInvoiceOf = ({ invoiceNo, taxId, remark, channel }) => {
+  const r = String(remark || "");
+  if (POS_INVOICE_NEG.test(r)) return { has: false, src: "備註註明不開" };
+  if (invoiceNo) return { has: true, src: `號碼 ${invoiceNo}` };
+  if (taxId) return { has: true, src: `統編 ${taxId}` };
+  if (POS_INVOICE_POS.test(r)) return { has: true, src: "備註" };
+  if (channel === "corp") return { has: true, src: "企業採購通路" };
+  if (channel === "partner") return { has: true, src: "合作通路" };
+  return { has: false, src: "" };
+};
 
 /* 依 YYYY-MM 把訂單分組 */
 const groupOrdersByMonth = (orders) => {
@@ -948,6 +966,7 @@ function POSDashboard({
   sY,
   sM,
   periodLabel,
+  onToggleInvoice,
 }) {
   const s = data.summary;
   const pct = (v) => `${(v * 100).toFixed(1)}%`;
@@ -1938,16 +1957,42 @@ function POSDashboard({
                         >
                           {o.missCost ? "—" : fmt$(o.net)}
                         </td>
-                        <td style={{ ...td2, textAlign: "right", fontSize: 10 }}>
+                        <td
+                          style={{ ...td2, textAlign: "right", fontSize: 10 }}
+                          title={
+                            o.hasInvoice
+                              ? `發票判定來源：${
+                                  typeof o.invoiceOverride === "boolean"
+                                    ? "手動設定"
+                                    : o.invoiceSrc || "—"
+                                }`
+                              : "未開發票（不課稅）"
+                          }
+                        >
                           {o.hasInvoice ? (
-                            <span style={{ color: "var(--up)" }}>已開</span>
+                            <span style={{ color: "var(--up)" }}>
+                              已開
+                              {typeof o.invoiceOverride === "boolean"
+                                ? "·手"
+                                : o.invoiceSrc?.startsWith("備註")
+                                ? "·註"
+                                : o.invoiceSrc?.startsWith("統編")
+                                ? "·統"
+                                : o.invoiceSrc?.startsWith("企業")
+                                ? "·企"
+                                : o.invoiceSrc?.startsWith("合作")
+                                ? "·合"
+                                : ""}
+                            </span>
                           ) : (
-                            <span style={{ color: "var(--t4)" }}>—</span>
+                            <span style={{ color: "var(--t4)" }}>
+                              {typeof o.invoiceOverride === "boolean" ? "未開·手" : "—"}
+                            </span>
                           )}
                         </td>
                       </tr>
                       {isOpen && (
-                        <tr>
+                        <tr onClick={(e) => e.stopPropagation()}>
                           <td
                             colSpan={9}
                             style={{ ...td2, background: "var(--s2)", padding: "16px 20px" }}
@@ -1957,6 +2002,7 @@ function POSDashboard({
                               costsEff={costsEff}
                               recipes={recipes}
                               components={components}
+                              onToggleInvoice={onToggleInvoice}
                             />
                           </td>
                         </tr>
@@ -4086,7 +4132,7 @@ function OrderDetail({ order, isSL, slFp, slCosts, spCosts }) {
 
 /* 門市單筆訂單決策明細：版型同 OrderDetail（左 商品明細／右 損益拆解），
    差別在門市無平台抽成、稅只課開票單、成本來源顯示配方 */
-function POSOrderDetail({ order, costsEff, recipes, components }) {
+function POSOrderDetail({ order, costsEff, recipes, components, onToggleInvoice }) {
   const has = (it) =>
     Object.prototype.hasOwnProperty.call(it, "snapshotCost") &&
     it.snapshotCost !== null;
@@ -4135,10 +4181,14 @@ function POSOrderDetail({ order, costsEff, recipes, components }) {
     order.payMethod && `付款：${order.payMethod}`,
     order.staff && `銷售人員：${order.staff}`,
     order.taxId && `統編：${order.taxId}`,
-    order.hasInvoice ? "發票：已開立" : "發票：未開立",
     discount > 0 && `全單折扣：${fmt$(discount)}（已按比例攤入商品）`,
     order.remark && `備註：${order.remark}`,
   ].filter(Boolean);
+  const invLabel = order.hasInvoice ? "已開立" : "未開立";
+  const invSrc =
+    typeof order.invoiceOverride === "boolean"
+      ? "手動設定"
+      : order.invoiceSrc || (order.hasInvoice ? "" : "無號碼／統編／備註");
   const secTitle = {
     fontSize: 11,
     fontWeight: 700,
@@ -4222,6 +4272,50 @@ function POSOrderDetail({ order, costsEff, recipes, components }) {
             {metaBits.join("　")}
           </div>
         )}
+        {/* 發票判定：來源＋手動覆寫（企業客走 SHOPLINE 線上獨立發票時 POS 沒號碼，
+            老闆可在備註寫「公司戶發票」自動認，或在這裡直接改） */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginTop: 8,
+            fontSize: 11,
+            color: "var(--t3)",
+            flexWrap: "wrap",
+          }}
+        >
+          <span>
+            發票：
+            <b style={{ color: order.hasInvoice ? "var(--up)" : "var(--t2)" }}>
+              {invLabel}
+            </b>
+            {invSrc ? `（${invSrc}）` : ""}
+            {order.hasInvoice ? "→ 課稅" : "→ 不課稅"}
+          </span>
+          {onToggleInvoice && (
+            <Btn
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleInvoice(order.orderId);
+              }}
+              style={{ fontSize: 10, padding: "3px 8px" }}
+            >
+              改為{order.hasInvoice ? "未開立" : "已開立"}
+            </Btn>
+          )}
+          {typeof order.invoiceOverride === "boolean" && onToggleInvoice && (
+            <Btn
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleInvoice(order.orderId, "reset");
+              }}
+              style={{ fontSize: 10, padding: "3px 8px" }}
+            >
+              恢復自動判定
+            </Btn>
+          )}
+        </div>
       </div>
       <div>
         <div style={secTitle}>損益拆解</div>
@@ -5366,7 +5460,7 @@ function ProfitCenter() {
           remark: "",
           staff: "",
           taxId: "",
-          hasInvoice: false,
+          invoiceNo: "",
           refunded: false,
           status: "",
           total: 0,
@@ -5383,7 +5477,7 @@ function ProfitCenter() {
       rec.taxId = safeText(r[tIdx.taxId]) || rec.taxId;
       rec.status = safeText(r[tIdx.status]) || rec.status;
       rec.total = numOrZero(r[tIdx.total]) || rec.total;
-      if (safeText(r[tIdx.invoiceNo])) rec.hasInvoice = true;
+      rec.invoiceNo = safeText(r[tIdx.invoiceNo]) || rec.invoiceNo;
     }
 
     /* 2) 訂單明細 → 商品行 */
@@ -5423,14 +5517,23 @@ function ProfitCenter() {
       const b = built[oid];
       if (!b) orphanTrans.push(oid);
       const st = `${b?.status || h.status}${h.refunded ? " 已退款" : ""}`;
+      const channel = posChannelOf(h.payMethod);
+      const inv = posInvoiceOf({
+        invoiceNo: h.invoiceNo,
+        taxId: h.taxId,
+        remark: h.remark,
+        channel,
+      });
       newOrders[oid] = {
         orderId: oid,
         date: h.date || b?.orderDate || "",
         status: st,
-        channel: posChannelOf(h.payMethod),
+        channel,
         payMethod: h.payMethod,
         staff: h.staff,
-        hasInvoice: h.hasInvoice,
+        hasInvoice: inv.has,
+        invoiceSrc: inv.src,
+        invoiceNo: h.invoiceNo,
         taxId: h.taxId,
         remark: h.remark,
         revenue: b?.revenue || h.total || 0,
@@ -5457,8 +5560,16 @@ function ProfitCenter() {
       Object.values(newOrders).forEach((o) => {
         const old = merged[o.orderId];
         /* 這次只有交易頭、沒有明細，但先前已匯過完整明細 → 保留舊明細，別被空陣列蓋掉 */
-        const next =
+        let next =
           !o.items.length && old?.items?.length ? { ...o, items: old.items } : o;
+        /* 老闆手動改過的發票判定（invoiceOverride）重匯不能被自動判定蓋掉 */
+        if (old && typeof old.invoiceOverride === "boolean")
+          next = {
+            ...next,
+            hasInvoice: old.invoiceOverride,
+            invoiceOverride: old.invoiceOverride,
+            invoiceSrc: "手動設定",
+          };
         merged[o.orderId] = withOldSnapshot(old, next);
       });
       return merged;
@@ -6904,6 +7015,30 @@ function ProfitCenter() {
     },
     [isSL]
   );
+  /* 門市發票判定手動覆寫（逐單；reset＝恢復自動判定）。稅是即時算的，不受快照凍結 */
+  const togglePosInvoice = useCallback((orderId, mode) => {
+    setPosOrders((p) => {
+      const o = p[orderId];
+      if (!o) return p;
+      if (mode === "reset") {
+        const inv = posInvoiceOf({
+          invoiceNo: o.invoiceNo,
+          taxId: o.taxId,
+          remark: o.remark,
+          channel: o.channel,
+        });
+        const n = { ...o, hasInvoice: inv.has, invoiceSrc: inv.src };
+        delete n.invoiceOverride;
+        return { ...p, [orderId]: n };
+      }
+      const v = !o.hasInvoice;
+      return {
+        ...p,
+        [orderId]: { ...o, hasInvoice: v, invoiceOverride: v, invoiceSrc: "手動設定" },
+      };
+    });
+  }, []);
+
   const commitFp = useCallback(
     (field, v) => {
       /* 門市沿用官網那組參數（營業費／稅率是全公司共用口徑） */
@@ -8660,6 +8795,7 @@ function ProfitCenter() {
                   monthly={posMonthly}
                   sY={sY}
                   sM={effM}
+                  onToggleInvoice={togglePosInvoice}
                   periodLabel={
                     sY === "Custom"
                       ? `${range.from || "起"}~${range.to || "迄"}`
