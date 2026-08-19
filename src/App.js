@@ -2150,6 +2150,8 @@ function OverviewDashboard({
   }, [posData, posCh]);
 
   const hasAny = slD || spS || posS;
+  /* 合計＝全公司（官網＋蝦皮＋門市六通路）；但呈現上門市不包成一包：
+     「門市」＝現場零售，其他五個通路各自一項（老闆 2026-08-19 定） */
   const totalRev = (slD?.rev || 0) + (spS?.tG || 0) + (posS?.rev || 0);
   const totalNet = (slD?.net || 0) + (spS?.afterComm || 0) + (posS?.net || 0);
   const totalNetMargin = totalRev > 0 ? totalNet / totalRev : 0;
@@ -2159,7 +2161,11 @@ function OverviewDashboard({
   const totalOpexRate = totalRev > 0 ? totalOpex / totalRev : 0;
   const slRevShare = totalRev > 0 ? (slD?.rev || 0) / totalRev : 0;
   const spRevShare = totalRev > 0 ? (spS?.tG || 0) / totalRev : 0;
-  const posRevShare = totalRev > 0 ? (posS?.rev || 0) / totalRev : 0;
+  const posRetail = posCh.find((c) => c.key === "retail") || null;
+  const posOthers = posCh.filter((c) => c.key !== "retail");
+  const chNet = (c) => (c && c.coveredRev > 0 ? c.coveredNet / c.coveredRev : 0);
+  /* 通路色：門市零售＝紫；其他五通路用同色系不同深淺（圖例會標名字，不靠顏色辨認） */
+  const otherAlpha = [0.7, 0.55, 0.42, 0.3, 0.2];
 
   const periodLabel =
     sY === "Custom"
@@ -2239,15 +2245,19 @@ function OverviewDashboard({
         platform: "蝦皮",
         msg: "有商品成本未填，淨利計算可能偏高",
       });
-    /* 門市：對全公司底線 15%、算不出成本的單、虧損單、經銷單淨利 */
-    if (posS && posS.coveredRev > 0 && posS.netMargin < POS_NET_FLOOR)
-      list.push({
-        level: "warn",
-        platform: "門市",
-        msg: `六通路合計淨利率 ${fmtP(posS.netMargin)} 低於全公司底線 ${(
-          POS_NET_FLOOR * 100
-        ).toFixed(0)}%，差距 ${((POS_NET_FLOOR - posS.netMargin) * 100).toFixed(1)}%`,
-      });
+    /* 門市（現場零售）對全公司底線 15%；算不出成本的單、虧損單（六通路）、經銷單淨利 */
+    {
+      const r = posCh.find((c) => c.key === "retail");
+      const rm = r && r.coveredRev > 0 ? r.coveredNet / r.coveredRev : null;
+      if (rm !== null && rm < POS_NET_FLOOR)
+        list.push({
+          level: "warn",
+          platform: "門市",
+          msg: `現場零售淨利率 ${fmtP(rm)} 低於全公司底線 ${(POS_NET_FLOOR * 100).toFixed(
+            0
+          )}%，差距 ${((POS_NET_FLOOR - rm) * 100).toFixed(1)}%`,
+        });
+    }
     if (posS && posS.noCostCount > 0)
       list.push({
         level: posS.coverage < 0.6 ? "error" : "warn",
@@ -2397,7 +2407,8 @@ function OverviewDashboard({
       if (!passPeriod(d)) return;
       const ym = d.substring(0, 7);
       if (!ym || ym.length < 7) return;
-      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0 };
+      if (!byMonth[ym])
+        byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0, posOtherRev: 0 };
       byMonth[ym].slRev += o.revenue || 0;
     });
     Object.values(spOrders || {}).forEach((o) => {
@@ -2413,7 +2424,8 @@ function OverviewDashboard({
       if (!passPeriod(d)) return;
       const ym = d.substring(0, 7);
       if (!ym || ym.length < 7) return;
-      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0 };
+      if (!byMonth[ym])
+        byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0, posOtherRev: 0 };
       const gross = o.grossPrice || 0;
       byMonth[ym].spRev += gross;
     });
@@ -2427,8 +2439,10 @@ function OverviewDashboard({
       if (!passPeriod(d)) return;
       const ym = d.substring(0, 7);
       if (!ym || ym.length < 7) return;
-      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0 };
-      byMonth[ym].posRev += g;
+      if (!byMonth[ym])
+        byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0, posOtherRev: 0 };
+      if (o.channel === "retail") byMonth[ym].posRev += g;
+      else byMonth[ym].posOtherRev += g;
     });
     return Object.values(byMonth)
       .sort((a, b) => a.month.localeCompare(b.month))
@@ -2436,8 +2450,9 @@ function OverviewDashboard({
       .map((d) => ({
         ...d,
         posRev: d.posRev || 0,
+        posOtherRev: d.posOtherRev || 0,
         label: d.month.substring(2).replace("-", "/"),
-        total: d.slRev + d.spRev + (d.posRev || 0),
+        total: d.slRev + d.spRev + (d.posRev || 0) + (d.posOtherRev || 0),
         net: sY === "Custom" ? undefined : allMonthly?.[d.month]?.net,
       }));
   }, [slOrders, spOrders, posOrders, sY, range, allMonthly]);
@@ -2739,41 +2754,77 @@ function OverviewDashboard({
                   transition: "width .6s",
                 }}
               />
-              <div style={{ flex: 1, background: posC, opacity: 0.85 }} />
+              <div
+                style={{
+                  width: `${totalRev > 0 ? ((posRetail?.rev || 0) / totalRev) * 100 : 0}%`,
+                  background: posC,
+                  opacity: 0.9,
+                  transition: "width .6s",
+                }}
+              />
+              {posOthers.map((c, i) => (
+                <div
+                  key={c.key}
+                  style={{
+                    width: `${totalRev > 0 ? (c.rev / totalRev) * 100 : 0}%`,
+                    background: posC,
+                    opacity: otherAlpha[i] ?? 0.2,
+                    borderLeft: c.rev > 0 ? "1px solid var(--s1)" : "none",
+                    transition: "width .6s",
+                  }}
+                />
+              ))}
             </div>
+            {/* 圖例：官網／蝦皮／門市（現場零售）／電話／Omnichat／經銷／合作／企業 ＝ 8 項全列，沒營收也列 */}
             <div
               style={{
                 display: "flex",
-                justifyContent: "space-between",
                 flexWrap: "wrap",
-                gap: 10,
+                gap: "6px 14px",
               }}
             >
               {[
-                { l: "官網", c: greenC, share: slRevShare, v: slD?.rev || 0 },
-                { l: "蝦皮", c: spC, share: spRevShare, v: spS?.tG || 0 },
-                { l: "門市", c: posC, share: posRevShare, v: posS?.rev || 0 },
-              ].map((p) => (
-                <div
-                  key={p.l}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 11,
-                    fontWeight: 600,
-                  }}
-                >
+                { l: "官網", c: greenC, op: 1, v: slD?.rev || 0 },
+                { l: "蝦皮", c: spC, op: 0.85, v: spS?.tG || 0 },
+                { l: "門市（現場零售）", c: posC, op: 0.9, v: posRetail?.rev || 0 },
+                ...posOthers.map((c, i) => ({
+                  l: c.label,
+                  c: posC,
+                  op: otherAlpha[i] ?? 0.2,
+                  v: c.rev,
+                })),
+              ].map((p) => {
+                const share = totalRev > 0 ? p.v / totalRev : 0;
+                const empty = p.v <= 0;
+                return (
                   <div
-                    style={{ width: 8, height: 8, borderRadius: 2, background: p.c }}
-                  />
-                  <span style={{ color: "var(--t2)" }}>{p.l}</span>
-                  <span style={{ fontFamily: mono, color: p.c }}>
-                    {(p.share * 100).toFixed(1)}%
-                  </span>
-                  <span style={{ color: "var(--t4)" }}>{fmt$(p.v)}</span>
-                </div>
-              ))}
+                    key={p.l}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      opacity: empty ? 0.55 : 1,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 2,
+                        background: p.c,
+                        opacity: p.op,
+                      }}
+                    />
+                    <span style={{ color: "var(--t2)" }}>{p.l}</span>
+                    <span style={{ fontFamily: mono, color: empty ? "var(--t4)" : p.c }}>
+                      {(share * 100).toFixed(1)}%
+                    </span>
+                    <span style={{ color: "var(--t4)" }}>{empty ? "—" : fmt$(p.v)}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -2805,19 +2856,23 @@ function OverviewDashboard({
                 id: "shopee",
               },
               {
-                label: "門市（六通路）",
+                label: "門市（現場零售）",
                 color: posC,
-                rev: posS?.rev || 0,
-                net: posS?.net || 0,
-                margin: posS?.netMargin || 0,
+                rev: posRetail?.rev || 0,
+                net: posRetail?.coveredNet || 0,
+                margin: chNet(posRetail),
                 target: POS_NET_FLOOR,
                 targetLabel: "底線",
-                orders: posS?.orders || 0,
-                opexRate: posS && posS.rev > 0 ? posS.op / posS.rev : 0,
-                aov: posS?.aov || 0,
+                orders: posRetail?.orders || 0,
+                opexRate:
+                  posRetail && posRetail.rev > 0 ? posRetail.op / posRetail.rev : 0,
+                aov:
+                  posRetail && posRetail.orders > 0
+                    ? posRetail.rev / posRetail.orders
+                    : 0,
                 note:
-                  posS && posS.noCostCount > 0
-                    ? `${posS.noCostCount} 筆算不出成本未計淨利`
+                  posRetail && posRetail.noCostCount > 0
+                    ? `${posRetail.noCostCount} 筆算不出成本未計淨利`
                     : null,
                 id: "pos",
               },
@@ -2961,6 +3016,95 @@ function OverviewDashboard({
               </React.Fragment>
             ))}
           </div>
+          {/* 門市其他五通路：各自一項（電話／Omnichat／經銷／合作／企業），沒單也列 */}
+          {posS && (
+            <div
+              style={{
+                borderTop: "1px solid var(--s3)",
+                marginTop: 20,
+                paddingTop: 16,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "var(--t3)",
+                  marginBottom: 10,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <div style={{ width: 8, height: 8, borderRadius: 2, background: posC, opacity: 0.55 }} />
+                門市其他通路（不計入「門市」，各自獨立）
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
+                  gap: 8,
+                }}
+              >
+                {posOthers.map((c, i) => {
+                  const empty = c.orders === 0;
+                  const nm = chNet(c);
+                  return (
+                    <div
+                      key={c.key}
+                      style={{
+                        background: "var(--s2)",
+                        borderRadius: 8,
+                        padding: "10px 12px",
+                        opacity: empty ? 0.55 : 1,
+                        borderLeft: `3px solid ${posC}`,
+                        borderLeftColor: posC,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)" }}>
+                          {c.label}
+                        </span>
+                        <span style={{ fontSize: 10, color: "var(--t4)", fontFamily: mono }}>
+                          {empty ? "無單" : `${c.orders} 筆`}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          fontFamily: mono,
+                          fontSize: 15,
+                          fontWeight: 700,
+                          color: empty ? "var(--t4)" : "var(--t1)",
+                        }}
+                      >
+                        {empty ? "—" : fmt$(c.rev)}
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 3 }}>
+                        {empty ? (
+                          "本期沒有訂單"
+                        ) : (
+                          <>
+                            淨利 {fmt$(c.coveredNet)}・
+                            <span style={{ color: c.coveredRev > 0 ? posNetColor(nm) : "var(--t4)", fontWeight: 700 }}>
+                              {c.coveredRev > 0 ? fmtP(nm) : "—"}
+                            </span>
+                            {c.noCostCount > 0 ? `　缺成本 ${c.noCostCount}` : ""}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -3323,7 +3467,22 @@ function OverviewDashboard({
                   background: posC,
                 }}
               />
-              門市
+              門市（現場零售）
+            </span>
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 8,
+                  height: 3,
+                  borderRadius: 2,
+                  background: posC,
+                  opacity: 0.45,
+                }}
+              />
+              門市其他通路
             </span>
             {showNetLine && (
               <span
@@ -3431,7 +3590,7 @@ function OverviewDashboard({
                                 fontSize: 11,
                                 color: "var(--t2)",
                                 fontWeight: 600,
-                                width: 28,
+                                minWidth: 52,
                               }}
                             >
                               {e.name}
@@ -3550,9 +3709,18 @@ function OverviewDashboard({
               />
               <Bar
                 dataKey="posRev"
-                name="門市"
+                name="門市零售"
                 fill={posC}
-                opacity={0.85}
+                opacity={0.9}
+                radius={[0, 0, 0, 0]}
+                maxBarSize={32}
+                stackId="a"
+              />
+              <Bar
+                dataKey="posOtherRev"
+                name="門市其他"
+                fill={posC}
+                opacity={0.45}
                 radius={[3, 3, 0, 0]}
                 maxBarSize={32}
                 stackId="a"
