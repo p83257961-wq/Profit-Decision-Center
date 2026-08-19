@@ -176,6 +176,7 @@ const SK = {
   posOrders: "upc_pos_orders_v1",
   posCosts: "upc_pos_costs_v1",
   posRecipes: "upc_pos_recipes_v1",
+  posIncluded: "upc_pos_included_v1",
   theme: "upc_theme_v1",
 };
 
@@ -443,11 +444,12 @@ const CSS = `
 @media(max-width:900px){.gm{grid-template-columns:1fr;}.side-sticky{position:static!important;}}
 @media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr);}.g3{grid-template-columns:repeat(2,1fr);}}
 @media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}.app-header{position:static!important;}}
-.gcmp{display:grid;grid-template-columns:1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
-.gcmp-l{padding:0 20px 0 0;min-width:0;}
-.gcmp-r{padding:0 0 0 20px;min-width:0;}
-.gcmp-div{background:var(--s3);margin:0 20px;}
-@media(max-width:700px){.gcmp{grid-template-columns:1fr;gap:20px;}.gcmp-div{display:none;}.gcmp-l,.gcmp-r{padding:0;}}
+.gcmp{display:grid;grid-template-columns:1fr 1px 1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
+.gcmp-c{padding:0 16px;min-width:0;}
+.gcmp-c:first-child{padding-left:0;}
+.gcmp-c:last-child{padding-right:0;}
+.gcmp-div{background:var(--s3);}
+@media(max-width:1000px){.gcmp{grid-template-columns:1fr;gap:20px;}.gcmp-div{display:none;}.gcmp-c{padding:0;}}
 .hero-num{font-size:clamp(40px,8vw,72px);overflow-wrap:anywhere;}
 .hero-num-md{font-size:clamp(36px,7vw,64px);overflow-wrap:anywhere;}
 .hero-pct{font-size:clamp(30px,5.5vw,48px);}
@@ -944,6 +946,17 @@ const PosKpi = ({ label, value, sub, color }) => (
 );
 /* 門市沒有獨立淨利目標：用全公司底線 15% 當對照線（拍板框架：綜合淨利率 16/15） */
 const POS_NET_FLOOR = 0.15;
+/* 門市三個指標的色彩門檻——Hero／KPI／通路拆解／總覽六通路表一律呼叫這三支，
+   不各自寫死數字（2026-08-18 審查：三處門檻不一致導致同頁自相矛盾） */
+const posNetColor = (nm) =>
+  nm >= POS_NET_FLOOR ? "var(--up)" : nm >= 0.05 ? "var(--wn)" : "var(--dn)";
+const posGmColor = (gm) =>
+  gm >= 0.45 ? "var(--up)" : gm >= 0.35 ? "var(--wn)" : "var(--dn)";
+const posCovColor = (cov) =>
+  cov >= 0.9 ? "var(--up)" : cov >= 0.6 ? "var(--wn)" : "var(--dn)";
+/* 交接檔陷阱③：單價≤1 且數量>100 ＝ 疑似開單時單價／數量顛倒（總價打進數量欄） */
+const posSwapSuspect = (items) =>
+  (items || []).some((it) => (Number(it.price) || 0) <= 1 && (Number(it.qty) || 0) > 100);
 function POSDashboard({
   data,
   included,
@@ -969,7 +982,6 @@ function POSDashboard({
   onToggleInvoice,
 }) {
   const s = data.summary;
-  const pct = (v) => `${(v * 100).toFixed(1)}%`;
   const gapVal = s.netMargin - POS_NET_FLOOR;
   const [q, setQ] = useState("");
   const dq = useDebounced(q);
@@ -988,18 +1000,8 @@ function POSDashboard({
     .filter((c) => !c.excluded)
     .map((c) => c.label)
     .join("＋");
-  const netColor =
-    s.netMargin >= 0.15
-      ? "var(--up)"
-      : s.netMargin >= 0.05
-      ? "var(--wn)"
-      : "var(--dn)";
-  const covColor =
-    s.costCoverage >= 0.9
-      ? "var(--up)"
-      : s.costCoverage >= 0.6
-      ? "var(--wn)"
-      : "var(--dn)";
+  const netColor = posNetColor(s.netMargin);
+  const covColor = posCovColor(s.costCoverage);
   const cth = {
     padding: "9px 10px",
     fontSize: 10,
@@ -1176,10 +1178,10 @@ function POSDashboard({
           }}
         >
           <b style={{ color: "var(--wn)" }}>本期沒有門市訂單。</b>{" "}
-          {s.rawTotal > 0
-            ? "本期只有取消／測試單。"
-            : data.channels.length && !data.channels.some((c) => !c.excluded)
+          {data.channels.length && !data.channels.some((c) => !c.excluded)
             ? "本期沒有現場零售單、其他通路又未勾選計入——到下方通路拆解勾選。"
+            : s.rawTotal > 0
+            ? "本期只有取消／測試單。"
             : "可能還沒匯入這個月份的兩份報表，或期間選錯了。"}
         </div>
       )}
@@ -1242,8 +1244,8 @@ function POSDashboard({
               }}
             >
               {gapVal >= 0
-                ? `✓ 淨利率 ${pct(s.netMargin)}，高於全公司底線 ${(gapVal * 100).toFixed(1)}%`
-                : `⚠ 淨利率 ${pct(s.netMargin)}，距全公司底線差 ${Math.abs(gapVal * 100).toFixed(1)}%`}
+                ? `✓ 淨利率 ${fmtP(s.netMargin)}，高於全公司底線 ${(gapVal * 100).toFixed(1)}%`
+                : `⚠ 淨利率 ${fmtP(s.netMargin)}，距全公司底線差 ${Math.abs(gapVal * 100).toFixed(1)}%`}
             </span>
           )}
         </div>
@@ -1305,7 +1307,7 @@ function POSDashboard({
                 color: s.coveredRev > 0 ? netColor : "var(--t4)",
               }}
             >
-              {s.coveredRev > 0 ? pct(s.netMargin) : "—"}
+              {s.coveredRev > 0 ? fmtP(s.netMargin) : "—"}
             </div>
             <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 4 }}>
               全公司底線 {(POS_NET_FLOOR * 100).toFixed(0)}%　差距{" "}
@@ -1418,14 +1420,14 @@ function POSDashboard({
         />
         <PosKpi
           label="毛利率（無平台抽成）"
-          value={s.coveredRev > 0 ? pct(s.grossMargin) : "—"}
+          value={s.coveredRev > 0 ? fmtP(s.grossMargin) : "—"}
           sub={
             <>
               毛利 {fmt$(s.coveredGp)}
               {s.rev > 0 && s.costCoverage < 0.999 ? (
                 <>
                   {" ｜ 成本覆蓋 "}
-                  <b style={{ color: covColor }}>{pct(s.costCoverage)}</b>
+                  <b style={{ color: covColor }}>{fmtP(s.costCoverage)}</b>
                   {`（${s.noCostCount} 筆算不出成本）`}
                 </>
               ) : s.rev > 0 ? (
@@ -1433,21 +1435,13 @@ function POSDashboard({
               ) : null}
             </>
           }
-          color={
-            s.coveredRev <= 0
-              ? "var(--t4)"
-              : s.grossMargin >= 0.5
-              ? "var(--up)"
-              : s.grossMargin >= 0.4
-              ? "var(--wn)"
-              : "var(--dn)"
-          }
+          color={s.coveredRev <= 0 ? "var(--t4)" : posGmColor(s.grossMargin)}
         />
         <PosKpi
           label="稅後淨利率"
-          value={s.coveredRev > 0 ? pct(s.netMargin) : "—"}
+          value={s.coveredRev > 0 ? fmtP(s.netMargin) : "—"}
           sub={`淨利 ${fmt$(s.coveredNet)} ｜ 營業費 ${opExpense}%・稅 ${taxRate}%（開票 ${
-            s.rev > 0 ? pct(s.invoiceRate) : "—"
+            s.rev > 0 ? fmtP(s.invoiceRate) : "—"
           } 才課）`}
           color={s.coveredRev > 0 ? netColor : "var(--t4)"}
         />
@@ -1559,7 +1553,7 @@ function POSDashboard({
                     <td style={ctd}>{fmt$(c.rev)}</td>
                     <td style={ctd}>
                       {chTotal.rev > 0 && !c.excluded
-                        ? pct(c.rev / chTotal.rev)
+                        ? fmtP(c.rev / chTotal.rev)
                         : "—"}
                     </td>
                     <td style={ctd}>{c.orders}</td>
@@ -1569,41 +1563,31 @@ function POSDashboard({
                     <td
                       style={{
                         ...ctd,
-                        color:
-                          gm >= 0.45
-                            ? "var(--up)"
-                            : gm >= 0.35
-                            ? "var(--wn)"
-                            : "var(--dn)",
+                        color: posGmColor(gm),
                         fontWeight: 700,
                       }}
                     >
-                      {c.coveredRev > 0 ? pct(gm) : "—"}
+                      {c.coveredRev > 0 ? fmtP(gm) : "—"}
                     </td>
                     <td
                       style={{
                         ...ctd,
-                        color:
-                          nm >= 0.1
-                            ? "var(--up)"
-                            : nm >= 0
-                            ? "var(--wn)"
-                            : "var(--dn)",
+                        color: posNetColor(nm),
                         fontWeight: 700,
                       }}
                     >
-                      {c.coveredRev > 0 ? pct(nm) : "—"}
+                      {c.coveredRev > 0 ? fmtP(nm) : "—"}
                     </td>
                     <td
                       style={{
                         ...ctd,
-                        color: cov >= 0.9 ? "var(--t2)" : "var(--wn)",
+                        color: posCovColor(cov),
                       }}
                     >
-                      {c.rev > 0 ? pct(cov) : "—"}
+                      {c.rev > 0 ? fmtP(cov) : "—"}
                     </td>
                     <td style={ctd}>
-                      {c.rev > 0 ? pct(c.invoiceRev / c.rev) : "—"}
+                      {c.rev > 0 ? fmtP(c.invoiceRev / c.rev) : "—"}
                     </td>
                   </tr>
                 );
@@ -1626,22 +1610,22 @@ function POSDashboard({
                   </td>
                   <td style={{ ...ctd, fontWeight: 700 }}>
                     {chTotal.coveredRev > 0
-                      ? pct(chTotal.coveredGp / chTotal.coveredRev)
+                      ? fmtP(chTotal.coveredGp / chTotal.coveredRev)
                       : "—"}
                   </td>
                   <td style={{ ...ctd, fontWeight: 700 }}>
                     {chTotal.coveredRev > 0
-                      ? pct(chTotal.coveredNet / chTotal.coveredRev)
+                      ? fmtP(chTotal.coveredNet / chTotal.coveredRev)
                       : "—"}
                   </td>
                   <td style={ctd}>
                     {chTotal.rev > 0
-                      ? pct(chTotal.coveredRev / chTotal.rev)
+                      ? fmtP(chTotal.coveredRev / chTotal.rev)
                       : "—"}
                   </td>
                   <td style={ctd}>
                     {chTotal.rev > 0
-                      ? pct(chTotal.invoiceRev / chTotal.rev)
+                      ? fmtP(chTotal.invoiceRev / chTotal.rev)
                       : "—"}
                   </td>
                 </tr>
@@ -1806,8 +1790,12 @@ function POSDashboard({
                   const isLoss = !o.missCost && o.net < 0;
                   const isOpen = openId === o.orderId;
                   const gm = o.revenue > 0 ? o.gp / o.revenue : 0;
-                  /* 毛利率高得不合理＝多半是開單沒選規格（總價打在數量 1 上） */
-                  const suspect = !o.missCost && gm > 0.85;
+                  /* 兩種開單異常：毛利率 >85%＝沒選克數規格（總價打在數量 1 上）；
+                     單價≤1 且數量>100＝單價／數量顛倒（成本被放大上千倍、毛利極負） */
+                  const suspect = (!o.missCost && gm > 0.85) || o.swapSuspect;
+                  const suspectMsg = o.swapSuspect
+                    ? "疑似單價／數量顛倒：有商品單價≤1 元、數量>100（總價打進數量欄），成本被放大，請到 POS 修單"
+                    : "毛利率異常高：可能是開單沒選克數規格（總價打在數量 1 上）";
                   const items = o.items || [];
                   const summary =
                     items.length === 0
@@ -1918,14 +1906,12 @@ function POSDashboard({
                         </td>
                         <td
                           style={{ ...td2, textAlign: "right", fontFamily: mono, fontWeight: 600 }}
-                          title={
-                            suspect
-                              ? "毛利率異常高：可能是開單沒選克數規格（總價打在數量 1 上）"
-                              : undefined
-                          }
+                          title={suspect ? suspectMsg : undefined}
                         >
                           {o.missCost ? (
-                            <span style={{ color: "var(--t4)" }}>—</span>
+                            <span style={{ color: "var(--t4)" }}>
+                              —{o.swapSuspect ? " ⚠" : ""}
+                            </span>
                           ) : (
                             <>
                               {fmt$(o.gp)}
@@ -1936,7 +1922,7 @@ function POSDashboard({
                                   marginLeft: 4,
                                 }}
                               >
-                                {pct(gm)}
+                                {fmtP(gm)}
                                 {suspect ? "⚠" : ""}
                               </span>
                             </>
@@ -2100,11 +2086,14 @@ function POSDashboard({
 function OverviewDashboard({
   slData,
   spData,
+  posData,
   slOrders,
   spOrders,
+  posOrders,
   slCosts,
   spCosts,
   allMonthly,
+  monthlyByPlatform,
   theme,
   onNavigate,
   sY,
@@ -2116,19 +2105,61 @@ function OverviewDashboard({
   const isDark = theme === "dark";
   const greenC = isDark ? "#2ECC71" : "#1A6B3C";
   const spC = isDark ? "#FF6533" : "#EE4D2D";
+  const posC = isDark ? "#9B7FCA" : "#7B5EA7";
   const goldC = isDark ? "#C9A84C" : "#8B6914";
   const gridC = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)";
 
-  const hasAny = slD || spS;
-  const totalRev = (slD?.rev || 0) + (spS?.tG || 0);
-  const totalNet = (slD?.net || 0) + (spS?.afterComm || 0);
+  /* 門市在總覽一律「六通路全算」（不受門市頁的計入勾選影響）；
+     淨利只算成本齊全的單（算不出成本的單計營收、不計淨利，下方會標示） */
+  const posCh = useMemo(() => posData?.channelsAll || [], [posData]);
+  const posS = useMemo(() => {
+    if (!posData) return null;
+    const t = posCh.reduce(
+      (a, c) => ({
+        rev: a.rev + c.rev,
+        net: a.net + c.coveredNet,
+        coveredRev: a.coveredRev + c.coveredRev,
+        coveredGp: a.coveredGp + c.coveredGp,
+        op: a.op + c.op,
+        orders: a.orders + c.orders,
+        noCostRev: a.noCostRev + c.noCostRev,
+        noCostCount: a.noCostCount + c.noCostCount,
+        lossCount: a.lossCount + c.lossCount,
+        invoiceRev: a.invoiceRev + c.invoiceRev,
+      }),
+      {
+        rev: 0,
+        net: 0,
+        coveredRev: 0,
+        coveredGp: 0,
+        op: 0,
+        orders: 0,
+        noCostRev: 0,
+        noCostCount: 0,
+        lossCount: 0,
+        invoiceRev: 0,
+      }
+    );
+    return {
+      ...t,
+      netMargin: t.coveredRev > 0 ? t.net / t.coveredRev : 0,
+      grossMargin: t.coveredRev > 0 ? t.coveredGp / t.coveredRev : 0,
+      aov: t.orders > 0 ? t.rev / t.orders : 0,
+      coverage: t.rev > 0 ? (t.rev - t.noCostRev) / t.rev : 0,
+    };
+  }, [posData, posCh]);
+
+  const hasAny = slD || spS || posS;
+  const totalRev = (slD?.rev || 0) + (spS?.tG || 0) + (posS?.rev || 0);
+  const totalNet = (slD?.net || 0) + (spS?.afterComm || 0) + (posS?.net || 0);
   const totalNetMargin = totalRev > 0 ? totalNet / totalRev : 0;
   /* 範圍內平均營業費率：營收加權（各訂單已依所屬月份快照 % 計算），
      選整年即為 1-12 月的加權平均 */
-  const totalOpex = (slD?.opExpTotal || 0) + (spS?.tOp || 0);
+  const totalOpex = (slD?.opExpTotal || 0) + (spS?.tOp || 0) + (posS?.op || 0);
   const totalOpexRate = totalRev > 0 ? totalOpex / totalRev : 0;
   const slRevShare = totalRev > 0 ? (slD?.rev || 0) / totalRev : 0;
   const spRevShare = totalRev > 0 ? (spS?.tG || 0) / totalRev : 0;
+  const posRevShare = totalRev > 0 ? (posS?.rev || 0) / totalRev : 0;
 
   const periodLabel =
     sY === "Custom"
@@ -2141,7 +2172,7 @@ function OverviewDashboard({
 
   const alerts = useMemo(() => {
     const list = [];
-    if (slD && slD.trueNetMargin < slD.targetNetRate)
+    if (slD && slD.valid > 0 && slD.trueNetMargin < slD.targetNetRate)
       list.push({
         level: "warn",
         platform: "官網",
@@ -2149,7 +2180,7 @@ function OverviewDashboard({
           slD.targetNetRate
         )}，差距 ${Math.abs(slD.gapVal).toFixed(1)}%`,
       });
-    if (spS && spS.netMargin < spS.targetNet)
+    if (spS && spS.validN > 0 && spS.netMargin < spS.targetNet)
       list.push({
         level: "warn",
         platform: "蝦皮",
@@ -2208,6 +2239,42 @@ function OverviewDashboard({
         platform: "蝦皮",
         msg: "有商品成本未填，淨利計算可能偏高",
       });
+    /* 門市：對全公司底線 15%、算不出成本的單、虧損單、經銷單淨利 */
+    if (posS && posS.coveredRev > 0 && posS.netMargin < POS_NET_FLOOR)
+      list.push({
+        level: "warn",
+        platform: "門市",
+        msg: `六通路合計淨利率 ${fmtP(posS.netMargin)} 低於全公司底線 ${(
+          POS_NET_FLOOR * 100
+        ).toFixed(0)}%，差距 ${((POS_NET_FLOOR - posS.netMargin) * 100).toFixed(1)}%`,
+      });
+    if (posS && posS.noCostCount > 0)
+      list.push({
+        level: posS.coverage < 0.6 ? "error" : "warn",
+        platform: "門市",
+        msg: `${posS.noCostCount} 筆（${fmt$(
+          posS.noCostRev
+        )}）算不出成本：品項未選正規或缺商品明細——這部分只計營收、不計淨利，成本覆蓋率 ${(
+          posS.coverage * 100
+        ).toFixed(0)}%`,
+      });
+    if (posS && posS.lossCount > 0)
+      list.push({
+        level: "info",
+        platform: "門市",
+        msg: `本期有 ${posS.lossCount} 筆虧損訂單`,
+      });
+    {
+      const dealer = posCh.find((c) => c.key === "dealer");
+      if (dealer && dealer.coveredRev > 0 && dealer.coveredNet / dealer.coveredRev < 0.05)
+        list.push({
+          level: "warn",
+          platform: "門市",
+          msg: `經銷·老客價 淨利率僅 ${fmtP(
+            dealer.coveredNet / dealer.coveredRev
+          )}（${dealer.orders} 筆 ${fmt$(dealer.rev)}），接近打平`,
+        });
+    }
     /* 月中 run-rate 預警：檢視「本月」且已過 7 日，用上月同期進度對比，
        落後 10% 以上提前示警，不必等月底才發現 */
     if (sY !== "Custom" && sY !== "All" && sM !== "All") {
@@ -2218,8 +2285,8 @@ function OverviewDashboard({
       if (`${sY}-${sM}` === curYm) {
         /* 進度基準用「已匯入資料的最後一天」而非今天：
            報表是手動匯入的，晚幾天看不該被誤判為落後。
-           兩平台各自取匯入進度、再取較小值——單一通路報表落後時
-           寧可不出警訊，也不用不完整的合計去誤判 */
+           三通路各自取匯入進度、只拿「本月已有資料的通路」來比，且分子分母同一組通路
+           （門市通常月底才匯，若本月還沒匯就不納入比較，不會把 pace 壓到 0） */
         const lastOf = (src) => {
           let d0 = 0;
           Object.values(src || {}).forEach((o) => {
@@ -2231,18 +2298,26 @@ function OverviewDashboard({
           });
           return d0;
         };
-        const lastDay = Math.min(lastOf(slOrders), lastOf(spOrders));
-        const effDay = Math.min(now.getDate(), lastDay);
         const mNum = Number(sM);
         const prevYm =
           mNum === 1
             ? `${Number(sY) - 1}-12`
             : `${sY}-${String(mNum - 1).padStart(2, "0")}`;
-        const prevRev = allMonthly?.[prevYm]?.rev || 0;
+        const plats = [
+          { k: "sl", last: lastOf(slOrders), cur: slD?.rev || 0 },
+          { k: "sp", last: lastOf(spOrders), cur: spS?.tG || 0 },
+          { k: "pos", last: lastOf(posOrders), cur: posS?.rev || 0 },
+        ].filter((p) => p.last > 0);
+        const lastDay = plats.length ? Math.min(...plats.map((p) => p.last)) : 0;
+        const effDay = Math.min(now.getDate(), lastDay);
+        const prevRev = plats.reduce(
+          (s, p) => s + (monthlyByPlatform?.[p.k]?.[prevYm]?.rev || 0),
+          0
+        );
         /* 分母用「上月」天數（prevRev 是上月的量），並封頂 1 */
         const prevDays = new Date(Number(sY), mNum - 1, 0).getDate();
         const frac = Math.min(1, effDay / prevDays);
-        const curRev = (slD?.rev || 0) + (spS?.tG || 0);
+        const curRev = plats.reduce((s, p) => s + p.cur, 0);
         if (effDay >= 7 && prevRev > 0 && frac > 0 && curRev > 0) {
           const pace = curRev / (prevRev * frac);
           if (pace < 0.9)
@@ -2268,16 +2343,38 @@ function OverviewDashboard({
   }, [
     slD,
     spS,
+    posS,
+    posCh,
     slData,
     spData,
     slCosts,
     spCosts,
     sY,
     sM,
-    allMonthly,
+    monthlyByPlatform,
     slOrders,
     spOrders,
+    posOrders,
   ]);
+
+  /* 同比／環比有一端沒門市資料（門市 2026-08 才上線）→ 不是同口徑，標出來
+     避免「新增一個通路」被讀成官網蝦皮成長 */
+  const posCompareNote = useMemo(() => {
+    const pm = monthlyByPlatform?.pos;
+    if (!pm || sY === "All" || sY === "Custom" || sM === "All") return null;
+    const cur = `${sY}-${sM}`;
+    if (!pm[cur]) return null;
+    const mNum = Number(sM);
+    const prevYm =
+      mNum === 1 ? `${Number(sY) - 1}-12` : `${sY}-${String(mNum - 1).padStart(2, "0")}`;
+    const yoyYm = `${Number(sY) - 1}-${sM}`;
+    const miss = [];
+    if (!pm[prevYm]) miss.push("環比");
+    if (!pm[yoyYm]) miss.push("同比");
+    return miss.length
+      ? `※ ${miss.join("／")}含門市但比較基期無門市資料（門市 2026-08 起才有），非同口徑`
+      : null;
+  }, [monthlyByPlatform, sY, sM]);
 
   /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響；
      淨利線取自 allMonthly（已扣分潤）；自訂區間因非整月，不畫淨利線 */
@@ -2300,7 +2397,7 @@ function OverviewDashboard({
       if (!passPeriod(d)) return;
       const ym = d.substring(0, 7);
       if (!ym || ym.length < 7) return;
-      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0 };
+      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0 };
       byMonth[ym].slRev += o.revenue || 0;
     });
     Object.values(spOrders || {}).forEach((o) => {
@@ -2316,20 +2413,34 @@ function OverviewDashboard({
       if (!passPeriod(d)) return;
       const ym = d.substring(0, 7);
       if (!ym || ym.length < 7) return;
-      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0 };
+      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0 };
       const gross = o.grossPrice || 0;
       byMonth[ym].spRev += gross;
+    });
+    /* 門市：取消／退款／測試單排除，六通路全算（與總覽口徑一致） */
+    Object.values(posOrders || {}).forEach((o) => {
+      const st = String(o.status || "");
+      if (st.includes("取消") || st.includes("退款") || st.includes("已退")) return;
+      const g = Number(o.revenue) || 0;
+      if (g > 0 && g <= POS_TEST_MAX) return;
+      const d = String(o.date || "");
+      if (!passPeriod(d)) return;
+      const ym = d.substring(0, 7);
+      if (!ym || ym.length < 7) return;
+      if (!byMonth[ym]) byMonth[ym] = { month: ym, slRev: 0, spRev: 0, posRev: 0 };
+      byMonth[ym].posRev += g;
     });
     return Object.values(byMonth)
       .sort((a, b) => a.month.localeCompare(b.month))
       .slice(-12)
       .map((d) => ({
         ...d,
+        posRev: d.posRev || 0,
         label: d.month.substring(2).replace("-", "/"),
-        total: d.slRev + d.spRev,
+        total: d.slRev + d.spRev + (d.posRev || 0),
         net: sY === "Custom" ? undefined : allMonthly?.[d.month]?.net,
       }));
-  }, [slOrders, spOrders, sY, range, allMonthly]);
+  }, [slOrders, spOrders, posOrders, sY, range, allMonthly]);
   const showNetLine = trendData.some((d) => d.net !== undefined);
 
   const crossProductRank = useMemo(() => {
@@ -2369,7 +2480,7 @@ function OverviewDashboard({
           尚無任何資料
         </div>
         <div style={{ fontSize: 12, color: "var(--t4)" }}>
-          請先上傳官網或蝦皮報表
+          請先上傳官網、蝦皮或門市報表
         </div>
       </div>
     );
@@ -2409,7 +2520,7 @@ function OverviewDashboard({
               lineHeight: 1.6,
             }}
           >
-            此期間兩平台都沒有有效訂單，下方數字全為
+            此期間三個通路都沒有有效訂單，下方數字全為
             0——請先確認期間選擇是否正確、該期間報表是否已匯入。
           </div>
         </div>
@@ -2428,7 +2539,7 @@ function OverviewDashboard({
         <div
           style={{
             height: 3,
-            background: `linear-gradient(90deg, ${greenC}, ${spC})`,
+            background: `linear-gradient(90deg, ${greenC}, ${spC}, ${posC})`,
           }}
         />
         <div style={{ padding: "28px 36px" }}>
@@ -2506,8 +2617,16 @@ function OverviewDashboard({
               </div>
               <div style={{ fontSize: 12, color: "var(--t4)", marginTop: 8 }}>
                 合計營收 {fmt$(totalRev)}
+                {posS && posS.noCostCount > 0
+                  ? `（門市 ${posS.noCostCount} 筆算不出成本，計營收不計淨利）`
+                  : ""}
               </div>
               <PeriodCompare monthly={allMonthly} sY={sY} sM={sM} />
+              {posCompareNote && (
+                <div style={{ fontSize: 10, color: "var(--wn)", marginTop: 4 }}>
+                  {posCompareNote}
+                </div>
+              )}
             </div>
             <div>
               <div
@@ -2612,57 +2731,49 @@ function OverviewDashboard({
                   transition: "width .6s",
                 }}
               />
-              <div style={{ flex: 1, background: spC, opacity: 0.8 }} />
+              <div
+                style={{
+                  width: `${spRevShare * 100}%`,
+                  background: spC,
+                  opacity: 0.85,
+                  transition: "width .6s",
+                }}
+              />
+              <div style={{ flex: 1, background: posC, opacity: 0.85 }} />
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: 11,
-                  fontWeight: 600,
-                }}
-              >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
+              {[
+                { l: "官網", c: greenC, share: slRevShare, v: slD?.rev || 0 },
+                { l: "蝦皮", c: spC, share: spRevShare, v: spS?.tG || 0 },
+                { l: "門市", c: posC, share: posRevShare, v: posS?.rev || 0 },
+              ].map((p) => (
                 <div
+                  key={p.l}
                   style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 2,
-                    background: greenC,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 11,
+                    fontWeight: 600,
                   }}
-                />
-                <span style={{ color: "var(--t2)" }}>官網</span>
-                <span style={{ fontFamily: mono, color: greenC }}>
-                  {(slRevShare * 100).toFixed(1)}%
-                </span>
-                <span style={{ color: "var(--t4)" }}>
-                  {fmt$(slD?.rev || 0)}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: 11,
-                  fontWeight: 600,
-                }}
-              >
-                <span style={{ color: "var(--t4)" }}>{fmt$(spS?.tG || 0)}</span>
-                <span style={{ fontFamily: mono, color: spC }}>
-                  {(spRevShare * 100).toFixed(1)}%
-                </span>
-                <span style={{ color: "var(--t2)" }}>蝦皮</span>
-                <div
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 2,
-                    background: spC,
-                  }}
-                />
-              </div>
+                >
+                  <div
+                    style={{ width: 8, height: 8, borderRadius: 2, background: p.c }}
+                  />
+                  <span style={{ color: "var(--t2)" }}>{p.l}</span>
+                  <span style={{ fontFamily: mono, color: p.c }}>
+                    {(p.share * 100).toFixed(1)}%
+                  </span>
+                  <span style={{ color: "var(--t4)" }}>{fmt$(p.v)}</span>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -2693,10 +2804,27 @@ function OverviewDashboard({
                 aov: spS?.avgAOV || 0,
                 id: "shopee",
               },
+              {
+                label: "門市（六通路）",
+                color: posC,
+                rev: posS?.rev || 0,
+                net: posS?.net || 0,
+                margin: posS?.netMargin || 0,
+                target: POS_NET_FLOOR,
+                targetLabel: "底線",
+                orders: posS?.orders || 0,
+                opexRate: posS && posS.rev > 0 ? posS.op / posS.rev : 0,
+                aov: posS?.aov || 0,
+                note:
+                  posS && posS.noCostCount > 0
+                    ? `${posS.noCostCount} 筆算不出成本未計淨利`
+                    : null,
+                id: "pos",
+              },
             ].map((p, i) => (
               <React.Fragment key={p.id}>
-                {i === 1 && <div className="gcmp-div" />}
-                <div className={i === 0 ? "gcmp-l" : "gcmp-r"}>
+                {i > 0 && <div className="gcmp-div" />}
+                <div className="gcmp-c">
                   <div
                     style={{
                       display: "flex",
@@ -2761,12 +2889,16 @@ function OverviewDashboard({
                         c: p.margin >= p.target ? p.color : "var(--wn)",
                         sub:
                           p.margin >= p.target
-                            ? `超標 +${((p.margin - p.target) * 100).toFixed(
-                                1
-                              )}%`
-                            : `差 ${((p.target - p.margin) * 100).toFixed(1)}%`,
+                            ? `${p.targetLabel ? "高於" + p.targetLabel + " " : "超標 "}+${(
+                                (p.margin - p.target) *
+                                100
+                              ).toFixed(1)}%`
+                            : `${p.targetLabel ? "距" + p.targetLabel : "差"} ${(
+                                (p.target - p.margin) *
+                                100
+                              ).toFixed(1)}%`,
                       },
-                      { l: "營收", v: fmt$(p.rev) },
+                      { l: "營收", v: fmt$(p.rev), sub: p.note || undefined },
                       { l: "有效訂單", v: `${p.orders} 筆` },
                       {
                         l: "營業費率（快照加權）",
@@ -2831,6 +2963,213 @@ function OverviewDashboard({
           </div>
         </div>
       </div>
+
+      {/* ── 門市六通路一覽（老闆 2026-08-18：總覽要一眼看到六個通路；沒單的也列 0） ── */}
+      {posS && (
+        <div
+          className="f2"
+          style={{
+            background: "var(--s1)",
+            border: "1px solid var(--s3)",
+            borderRadius: 16,
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 10,
+              marginBottom: 12,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "var(--t2)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <div
+                style={{ width: 8, height: 8, borderRadius: 2, background: posC }}
+              />
+              門市六通路 · {periodLabel}
+            </div>
+            <span style={{ fontSize: 11, color: "var(--t3)" }}>
+              合計 {fmt$(posS.rev)} ｜ {posS.orders} 筆 ｜ 淨利率{" "}
+              {posS.coveredRev > 0 ? fmtP(posS.netMargin) : "—"}
+              {posS.noCostCount > 0
+                ? `（${posS.noCostCount} 筆算不出成本未計淨利）`
+                : ""}
+            </span>
+            <button
+              onClick={() => onNavigate("pos")}
+              style={{
+                marginLeft: "auto",
+                fontSize: 10,
+                fontWeight: 700,
+                color: posC,
+                background: "transparent",
+                border: `1px solid ${posC}44`,
+                borderRadius: 6,
+                padding: "3px 10px",
+                cursor: "pointer",
+              }}
+            >
+              詳細分析 →
+            </button>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table
+              style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}
+            >
+              <thead>
+                <tr>
+                  {[
+                    ["通路", "left"],
+                    ["營收", "right"],
+                    ["佔門市", "right"],
+                    ["筆數", "right"],
+                    ["客單", "right"],
+                    ["毛利率", "right"],
+                    ["淨利率", "right"],
+                    ["開票", "right"],
+                  ].map(([h, al]) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "8px 10px",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "var(--t3)",
+                        textAlign: al,
+                        borderBottom: "1px solid var(--s3)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {posCh.map((c) => {
+                  const empty = c.orders === 0;
+                  const gm = c.coveredRev > 0 ? c.coveredGp / c.coveredRev : null;
+                  const nm = c.coveredRev > 0 ? c.coveredNet / c.coveredRev : null;
+                  const share = posS.rev > 0 ? c.rev / posS.rev : 0;
+                  const cellR = {
+                    padding: "9px 10px",
+                    fontSize: 12,
+                    fontFamily: mono,
+                    textAlign: "right",
+                    borderBottom: "1px solid var(--s3)",
+                    color: empty ? "var(--t4)" : "var(--t2)",
+                    whiteSpace: "nowrap",
+                  };
+                  return (
+                    <tr key={c.key} style={{ opacity: empty ? 0.55 : 1 }}>
+                      <td
+                        style={{
+                          ...cellR,
+                          textAlign: "left",
+                          fontFamily: "inherit",
+                          fontWeight: 700,
+                          color: empty ? "var(--t4)" : "var(--t1)",
+                          minWidth: 150,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span>{c.label}</span>
+                          {c.key === "dealer" && !empty && (
+                            <span
+                              style={{
+                                fontSize: 9,
+                                padding: "1px 5px",
+                                borderRadius: 4,
+                                border: `1px solid ${posC}55`,
+                                color: posC,
+                                fontWeight: 700,
+                              }}
+                            >
+                              老闆關係單
+                            </span>
+                          )}
+                        </div>
+                        {/* 營收佔比小條 */}
+                        <div
+                          style={{
+                            height: 4,
+                            borderRadius: 99,
+                            background: "var(--s3)",
+                            marginTop: 5,
+                            overflow: "hidden",
+                            maxWidth: 160,
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${share * 100}%`,
+                              height: "100%",
+                              background: posC,
+                              opacity: 0.85,
+                            }}
+                          />
+                        </div>
+                      </td>
+                      <td style={{ ...cellR, fontWeight: empty ? 400 : 700 }}>
+                        {empty ? "—" : fmt$(c.rev)}
+                      </td>
+                      <td style={cellR}>{empty ? "—" : fmtP(share)}</td>
+                      <td style={cellR}>{empty ? "0" : c.orders}</td>
+                      <td style={cellR}>{empty ? "—" : fmt$(c.rev / c.orders)}</td>
+                      <td
+                        style={{
+                          ...cellR,
+                          fontWeight: 700,
+                          color: gm === null ? "var(--t4)" : posGmColor(gm),
+                        }}
+                      >
+                        {gm === null ? "—" : fmtP(gm)}
+                      </td>
+                      <td
+                        style={{
+                          ...cellR,
+                          fontWeight: 700,
+                          color: nm === null ? "var(--t4)" : posNetColor(nm),
+                        }}
+                      >
+                        {nm === null ? "—" : fmtP(nm)}
+                        {!empty && c.noCostCount > 0 && (
+                          <span
+                            style={{ fontSize: 9, color: "var(--wn)", marginLeft: 4 }}
+                            title={`${c.noCostCount} 筆算不出成本，未計入此通路淨利率`}
+                          >
+                            缺{c.noCostCount}
+                          </span>
+                        )}
+                      </td>
+                      <td style={cellR}>
+                        {empty || c.rev === 0 ? "—" : fmtP(c.invoiceRev / c.rev)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 10, lineHeight: 1.6 }}>
+            門市無平台抽成；毛利率／淨利率只算成本齊全的單；稅只課有開發票的單。淨利率綠＝達全公司底線
+            {(POS_NET_FLOOR * 100).toFixed(0)}%。
+            {posCh.some((c) => c.orders === 0) &&
+              "　灰色通路＝本期還沒有訂單（員工開單時選對應付款方式就會出現）。"}
+          </div>
+        </div>
+      )}
 
       {/* ── 異常警示 ── */}
       {alerts.length > 0 && (
@@ -2971,6 +3310,20 @@ function OverviewDashboard({
                 }}
               />
               蝦皮
+            </span>
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 8,
+                  height: 3,
+                  borderRadius: 2,
+                  background: posC,
+                }}
+              />
+              門市
             </span>
             {showNetLine && (
               <span
@@ -3182,7 +3535,7 @@ function OverviewDashboard({
                 name="官網"
                 fill={greenC}
                 opacity={0.85}
-                radius={[3, 3, 0, 0]}
+                radius={[0, 0, 0, 0]}
                 maxBarSize={32}
                 stackId="a"
               />
@@ -3190,6 +3543,15 @@ function OverviewDashboard({
                 dataKey="spRev"
                 name="蝦皮"
                 fill={spC}
+                opacity={0.85}
+                radius={[0, 0, 0, 0]}
+                maxBarSize={32}
+                stackId="a"
+              />
+              <Bar
+                dataKey="posRev"
+                name="門市"
+                fill={posC}
                 opacity={0.85}
                 radius={[3, 3, 0, 0]}
                 maxBarSize={32}
@@ -3234,10 +3596,10 @@ function OverviewDashboard({
               marginBottom: 4,
             }}
           >
-            <Package size={14} color="var(--t3)" /> 跨平台銷售排行
+            <Package size={14} color="var(--t3)" /> 官網 × 蝦皮 銷售排行
           </div>
           <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 16 }}>
-            綠 = 官網　橘 = 蝦皮
+            綠 = 官網　橘 = 蝦皮（門市品名格式不同、未納入）
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {crossProductRank.map((p, i) => {
@@ -3810,13 +4172,15 @@ const buildPosRecipe = (name, option, components) => {
         c.name === `${base}${g}g`
     );
     if (hit) return [{ compId: hit[0], qty: 1 }];
-    const loose = compEntries.find(
+    /* 寬鬆比對只在「候選唯一」時採用；同茶區有多支（阿里山／阿里山金萱／阿里山瑞里）
+       就回 null 讓它進「無成本資料」清單，由老闆在成本資料庫手動指定——寧可漏配不可配錯 */
+    const loose = compEntries.filter(
       ([, c]) =>
         c.cat === "茶葉" &&
         c.name.endsWith(`${g}g`) &&
         (c.name.startsWith(base) || base.includes(c.name.replace(`${g}g`, "")))
     );
-    if (loose) return [{ compId: loose[0], qty: 1 }];
+    if (loose.length === 1) return [{ compId: loose[0][0], qty: 1 }];
   }
   return null;
 };
@@ -4181,6 +4545,10 @@ function POSOrderDetail({ order, costsEff, recipes, components, onToggleInvoice 
     order.payMethod && `付款：${order.payMethod}`,
     order.staff && `銷售人員：${order.staff}`,
     order.taxId && `統編：${order.taxId}`,
+    order.refundAmt > 0 &&
+      `⚠ 部分退貨 ${fmt$(order.refundAmt)}：營收已扣成淨額，成本仍以全部商品計（退的是哪件 POS 匯出沒寫）`,
+    order.swapSuspect &&
+      "⚠ 疑似單價／數量顛倒：有商品單價≤1 元、數量>100，成本被放大，請到 POS 修單",
     discount > 0 && `全單折扣：${fmt$(discount)}（已按比例攤入商品）`,
     order.remark && `備註：${order.remark}`,
   ].filter(Boolean);
@@ -4234,7 +4602,10 @@ function POSOrderDetail({ order, costsEff, recipes, components, onToggleInvoice 
                       <>
                         {fmt$(u * it.qty)}
                         {has(it) && (
-                          <span style={{ fontSize: 9, color: "var(--wn)", marginLeft: 3 }}>
+                          <span
+                            style={{ fontSize: 9, color: "var(--t4)", marginLeft: 3 }}
+                            title="此筆成本已隨本期快照鎖定，不受之後改原料價影響"
+                          >
                             鎖
                           </span>
                         )}
@@ -4386,7 +4757,10 @@ function ProfitCenter() {
   /* 門市通路過濾：KPI 預設只算「現場零售」（老闆 2026-08-18 定）；
      其他通路（經銷／電話／Omnichat…）仍顯示在通路表上、數字照算，勾了才計入 KPI。
      用「計入清單」而非「排除清單」：之後新出現的通路自動不計入，不會偷偷灌進零售 KPI */
-  const [posIncluded, setPosIncluded] = useState(["retail"]);
+  const [posIncluded, setPosIncluded] = useState(() => {
+    const v = gl(SK.posIncluded, ["retail"]);
+    return Array.isArray(v) && v.length ? v : ["retail"];
+  });
 
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
@@ -4524,6 +4898,9 @@ function ProfitCenter() {
   useEffect(() => {
     persist(SK.posRecipes, posRecipes);
   }, [posRecipes, persist]);
+  useEffect(() => {
+    persist(SK.posIncluded, posIncluded);
+  }, [posIncluded, persist]);
 
   /* Firebase init */
   useEffect(() => {
@@ -4760,6 +5137,8 @@ function ProfitCenter() {
             if (metaData.spRecipes) setSpRecipes(metaData.spRecipes);
             if (metaData.posCosts) setPosCosts(metaData.posCosts);
             if (metaData.posRecipes) setPosRecipes(metaData.posRecipes);
+            if (Array.isArray(metaData.posIncluded) && metaData.posIncluded.length)
+              setPosIncluded(metaData.posIncluded);
             lRMeta.current = rMs;
             lL.current = rMs;
             setLastSyncAt(Date.now());
@@ -4932,6 +5311,7 @@ function ProfitCenter() {
           spRecipes,
           posCosts,
           posRecipes,
+          posIncluded,
           updatedAtMs: ms,
           updatedBy: meta.current.clientId,
         });
@@ -5039,6 +5419,7 @@ function ProfitCenter() {
     posOrders,
     posCosts,
     posRecipes,
+    posIncluded,
     aReady,
     cReady,
   ]);
@@ -5430,11 +5811,23 @@ function ProfitCenter() {
       });
       return;
     }
-    posStage.current[isTrans ? "trans" : "orders"] = { rows, idx };
+    /* 暫存區跨分頁切換保留（切去官網看一眼再回來不會丟檔），但超過 30 分鐘的半份暫存視為過期：
+       避免隔天拿新匯出的一份去跟舊的一份 join */
+    const STAGE_TTL = 30 * 60 * 1000;
+    const otherKey = isTrans ? "orders" : "trans";
+    const other = posStage.current[otherKey];
+    if (other && Date.now() - (other.at || 0) > STAGE_TTL) {
+      posStage.current[otherKey] = null;
+      toast(
+        `先前暫存的${isTrans ? "POS訂單明細" : "交易明細"}已超過 30 分鐘，已捨棄——請重新拖入兩份`,
+        { type: "warning", duration: 7000 }
+      );
+    }
+    posStage.current[isTrans ? "trans" : "orders"] = { rows, idx, at: Date.now() };
     const have = posStage.current;
     if (!have.trans || !have.orders) {
       toast(
-        `已讀取${isTrans ? "交易明細" : "POS訂單明細"}，請再拖入另一份${
+        `已讀取${isTrans ? "交易明細" : "POS訂單明細"}（暫存 30 分鐘），請再拖入另一份${
           isTrans ? "POS訂單明細" : "交易明細"
         }`,
         { type: "info", duration: 6000 }
@@ -5462,11 +5855,15 @@ function ProfitCenter() {
           taxId: "",
           invoiceNo: "",
           refunded: false,
+          refundAmt: 0,
           status: "",
           total: 0,
         });
       if (isRefund) {
+        /* 退貨列金額（匯出是負數）要留下來抵銷：部分退貨的單以淨額入帳，
+           全額退才整單排除（交接檔陷阱⑤） */
         rec.refunded = true;
+        rec.refundAmt += Math.abs(numOrZero(r[tIdx.total]));
         continue;
       }
       rec.payMethod = safeText(r[tIdx.payMethod]) || rec.payMethod;
@@ -5500,11 +5897,14 @@ function ProfitCenter() {
           items: [],
         };
       if (total > 0 && !built[oid].revenue) built[oid].revenue = total;
+      /* 數量：空白才回退 1；明確的 0／小數照實保留（parseInt||1 會把 0 和 1.5 都變 1） */
+      const qRaw = safeText(r[oIdx.qty]);
+      const qNum = parseFloat(qRaw);
       built[oid].items.push({
         key: `${nm}_${opt}`,
         name: nm,
         option: opt,
-        qty: parseInt(r[oIdx.qty], 10) || 1,
+        qty: qRaw === "" || Number.isNaN(qNum) ? 1 : qNum,
         price: numOrZero(r[oIdx.price]),
       });
     }
@@ -5516,7 +5916,6 @@ function ProfitCenter() {
     Object.entries(head).forEach(([oid, h]) => {
       const b = built[oid];
       if (!b) orphanTrans.push(oid);
-      const st = `${b?.status || h.status}${h.refunded ? " 已退款" : ""}`;
       const channel = posChannelOf(h.payMethod);
       const inv = posInvoiceOf({
         invoiceNo: h.invoiceNo,
@@ -5524,6 +5923,15 @@ function ProfitCenter() {
         remark: h.remark,
         channel,
       });
+      /* 退貨抵銷：淨額 = 結清 − 退貨。淨額 ≤0 ＝全額退（整單排除）；>0 ＝部分退貨，以淨額入帳
+         （成本仍以全部商品計，明細裡會標示供人工複核） */
+      const grossTotal = b?.revenue || h.total || 0;
+      const netTotal = grossTotal - (h.refundAmt || 0);
+      const fullRefund = h.refunded && netTotal <= 0;
+      const partialRefund = h.refunded && netTotal > 0;
+      const st = `${b?.status || h.status}${
+        fullRefund ? " 已退款" : partialRefund ? " 含部分退貨" : ""
+      }`;
       newOrders[oid] = {
         orderId: oid,
         date: h.date || b?.orderDate || "",
@@ -5536,10 +5944,14 @@ function ProfitCenter() {
         invoiceNo: h.invoiceNo,
         taxId: h.taxId,
         remark: h.remark,
-        revenue: b?.revenue || h.total || 0,
+        revenue: partialRefund ? netTotal : grossTotal,
+        refundAmt: h.refundAmt || 0,
         items: b ? b.items : [],
       };
     });
+    /* 反向孤兒：訂單明細有、交易明細沒有（多半是還沒付款、或交易明細範圍沒抓到）。
+       不能當營收入帳（沒收到錢），但也不能靜默吞掉——列出來提醒 */
+    const orphanBuilt = Object.keys(built).filter((oid) => !head[oid]);
 
     /* 4) 自動建配方：對沒有配方的商品鍵套規則引擎 */
     const autoR = {};
@@ -5592,12 +6004,23 @@ function ProfitCenter() {
     if (unmatched.length) msg += `；${unmatched.length} 項無成本資料`;
     if (orphanTrans.length)
       msg += `；${orphanTrans.length} 張交易沒有對到商品明細（已先以營收入帳、不算毛利；訂單明細日期範圍往前多抓一個月再匯一次即可補齊）`;
+    if (orphanBuilt.length)
+      msg += `；${orphanBuilt.length} 張訂單有商品明細但對不到交易紀錄（多半尚未付款或交易明細範圍沒抓到）——未入帳，補匯較新的交易明細即可`;
+    const partialN = Object.values(newOrders).filter((o) =>
+      String(o.status).includes("含部分退貨")
+    ).length;
+    if (partialN) msg += `；${partialN} 筆含部分退貨已以淨額入帳`;
     toast(msg, {
-      type: unmatched.length || orphanTrans.length ? "warning" : "success",
-      duration: 9000,
+      type:
+        unmatched.length || orphanTrans.length || orphanBuilt.length
+          ? "warning"
+          : "success",
+      duration: 10000,
     });
     if (unmatched.length)
       console.warn("[POS] 無法自動對應成本的商品：", unmatched);
+    if (orphanBuilt.length)
+      console.warn("[POS] 有明細但無交易紀錄（未入帳）的訂單：", orphanBuilt);
     if (orphanTrans.length) console.warn("[POS] join 不到的交易：", orphanTrans);
   };
 
@@ -5763,13 +6186,19 @@ function ProfitCenter() {
         cost: 0,
         gp: 0,
         net: 0,
+        op: 0,
+        tax: 0,
         orders: 0,
         qty: 0,
         noCostRev: 0,
+        noCostCount: 0,
         invoiceRev: 0,
         coveredRev: 0,
         coveredGp: 0,
         coveredNet: 0,
+        coveredOp: 0,
+        coveredTax: 0,
+        lossCount: 0,
       };
     });
     const mm = {};
@@ -5794,15 +6223,22 @@ function ProfitCenter() {
       ch.cost += fin.oCost;
       ch.gp += fin.gp;
       ch.net += fin.finalNet;
+      ch.op += fin.opAmt;
+      ch.tax += fin.txAmt;
       ch.orders++;
       order.items.forEach((it) => {
         ch.qty += it.qty || 1;
       });
-      if (fin.missCost) ch.noCostRev += fin.gross;
-      else {
+      if (fin.missCost) {
+        ch.noCostRev += fin.gross;
+        ch.noCostCount++;
+      } else {
         ch.coveredRev += fin.gross;
         ch.coveredGp += fin.gp;
         ch.coveredNet += fin.finalNet;
+        ch.coveredOp += fin.opAmt;
+        ch.coveredTax += fin.txAmt;
+        if (fin.finalNet < 0) ch.lossCount++;
       }
       if (order.hasInvoice) ch.invoiceRev += fin.gross;
       /* 訂單明細表列出「所有」有效訂單（含未計入 KPI 的通路，畫面上會灰掉標示）——
@@ -5816,6 +6252,7 @@ function ProfitCenter() {
         net: fin.finalNet,
         missCost: fin.missCost,
         excludedCh: excluded,
+        swapSuspect: posSwapSuspect(order.items),
         channelLabel: posChannelLabel(order.channel),
       });
       if (excluded) return;
@@ -5826,6 +6263,10 @@ function ProfitCenter() {
         0
       );
       const scale = lineSum > 0 && fin.gross > 0 ? fin.gross / lineSum : 1;
+      /* 商品行結帳價全空／全 0 但訂單合計有值（贈品／人工調整單）：
+         按數量等權攤，別讓這筆營收在商品表消失 */
+      const qtySum = order.items.reduce((s, it) => s + (it.qty || 1), 0);
+      const evenSplit = lineSum <= 0 && fin.gross > 0 && qtySum > 0;
       order.items.forEach((it) => {
         const has =
           Object.prototype.hasOwnProperty.call(it, "snapshotCost") &&
@@ -5833,7 +6274,9 @@ function ProfitCenter() {
         const unit = has
           ? Number(it.snapshotCost) || 0
           : Number(posEffCosts[it.key]) || 0;
-        const ir = (Number(it.price) || 0) * (it.qty || 1) * scale;
+        const ir = evenSplit
+          ? (fin.gross * (it.qty || 1)) / qtySum
+          : (Number(it.price) || 0) * (it.qty || 1) * scale;
         const ic = unit * (it.qty || 1);
         t.totalQty += it.qty || 1;
         if (!mm[it.key])
@@ -5881,6 +6324,13 @@ function ProfitCenter() {
       channels: POS_CHANNELS.map((c) => byChannel[c.key])
         .filter((c) => c.rev > 0 || c.orders > 0)
         .map((c) => ({ ...c, excluded: !posIncluded.includes(c.key) })),
+      /* 總覽用：六個通路一律列出（沒單的也給 0 列），且不受「計入清單」影響 */
+      channelsAll: POS_CHANNELS.map((c) => ({
+        ...byChannel[c.key],
+        excluded: !posIncluded.includes(c.key),
+      })),
+      cancelledTotal: t.cancelledTotal,
+      testCount: t.testCount,
       summary: {
         ...t,
         /* 毛利／淨利率一律用「成本齊全」的訂單當基數 */
@@ -5893,21 +6343,30 @@ function ProfitCenter() {
     };
   }, [posOrders, posEffCosts, slFp, inPeriod, posIncluded]);
 
-  /* 門市每月營收／淨利（環比同比用；同 KPI 口徑：計入的通路、淨利只算成本齊全的單） */
-  const posMonthly = useMemo(() => {
-    const map = {};
-    Object.values(posOrders).forEach((o) => {
-      const ym = String(o.date || "").substring(0, 7);
-      if (ym.length < 7) return;
-      if (!posIncluded.includes(o.channel)) return;
-      const fin = posOrderFin(o, slFp, posEffCosts);
-      if (fin.isCanc || fin.isTest) return;
-      if (!map[ym]) map[ym] = { rev: 0, net: 0 };
-      map[ym].rev += fin.gross;
-      if (!fin.missCost) map[ym].net += fin.finalNet;
-    });
-    return map;
-  }, [posOrders, posIncluded, slFp, posEffCosts]);
+  /* 門市每月營收／淨利（環比同比用；門市頁＝計入的通路；總覽＝全部通路）。
+     淨利只算成本齊全的單 */
+  const buildPosMonthly = useCallback(
+    (channelFilter) => {
+      const map = {};
+      Object.values(posOrders).forEach((o) => {
+        const ym = String(o.date || "").substring(0, 7);
+        if (ym.length < 7) return;
+        if (channelFilter && !channelFilter.includes(o.channel)) return;
+        const fin = posOrderFin(o, slFp, posEffCosts);
+        if (fin.isCanc || fin.isTest) return;
+        if (!map[ym]) map[ym] = { rev: 0, net: 0 };
+        map[ym].rev += fin.gross;
+        if (!fin.missCost) map[ym].net += fin.finalNet;
+      });
+      return map;
+    },
+    [posOrders, slFp, posEffCosts]
+  );
+  const posMonthly = useMemo(
+    () => buildPosMonthly(posIncluded),
+    [buildPosMonthly, posIncluded]
+  );
+  const posMonthlyAll = useMemo(() => buildPosMonthly(null), [buildPosMonthly]);
 
   const slData = useMemo(() => {
     const all = Object.values(slOrders);
@@ -6236,9 +6695,10 @@ function ProfitCenter() {
     return map;
   }, [spOrders, spFp, spEffCosts, commissions]);
 
+  /* 三通路合計月表（總覽環比同比／趨勢淨利線用；門市＝全部通路、淨利只算成本齊全單） */
   const allMonthly = useMemo(() => {
     const map = {};
-    [slMonthly, spMonthly].forEach((src) =>
+    [slMonthly, spMonthly, posMonthlyAll].forEach((src) =>
       Object.entries(src).forEach(([k, v]) => {
         if (!map[k]) map[k] = { rev: 0, net: 0 };
         map[k].rev += v.rev;
@@ -6246,7 +6706,7 @@ function ProfitCenter() {
       })
     );
     return map;
-  }, [slMonthly, spMonthly]);
+  }, [slMonthly, spMonthly, posMonthlyAll]);
 
   /* ─── Derived state ────────────────────────────────────────── */
   const isOverview = platform === "overview";
@@ -6308,8 +6768,6 @@ function ProfitCenter() {
     setPage(0);
     setExpandedId(null);
     setRecipeEditKey(null);
-    /* 門市兩份報表的暫存區只在門市頁有意義：離開就清，避免下次帶著舊檔 join */
-    if (platform !== "pos") posStage.current = { trans: null, orders: null };
   }, [lossOnly, dSearch, orderSort, sY, sM, platform, range]);
 
   /* 首次載入資料時自動跳到最新月份（僅一次；手動切換年份會重設月份） */
@@ -6318,10 +6776,12 @@ function ProfitCenter() {
     if (autoJumpedRef.current) return;
     const slVals = Object.values(slOrders);
     const spVals = Object.values(spOrders);
-    if (!slVals.length && !spVals.length) return;
+    const posVals = Object.values(posOrders);
+    if (!slVals.length && !spVals.length && !posVals.length) return;
     const dates = [
       ...slVals.map((o) => o.date),
       ...spVals.map((o) => String(o.date)),
+      ...posVals.map((o) => String(o.date)),
     ]
       .filter(Boolean)
       .sort()
@@ -6330,7 +6790,7 @@ function ProfitCenter() {
     autoJumpedRef.current = true;
     setSY(dates[0].substring(0, 4));
     setSM(dates[0].substring(5, 7));
-  }, [slOrders, spOrders]);
+  }, [slOrders, spOrders, posOrders]);
 
   const slUsage = useMemo(() => buildUsage(slOrders), [slOrders]);
   const spUsage = useMemo(() => buildUsage(spOrders), [spOrders]);
@@ -8412,7 +8872,9 @@ function ProfitCenter() {
               <div
                 role="button"
                 tabIndex={0}
-                aria-label={`匯入${isSL ? "官網" : "蝦皮"}報表檔案（點擊或拖曳）`}
+                aria-label={`匯入${
+                  isPOS ? "門市" : isSL ? "官網" : "蝦皮"
+                }報表檔案（點擊或拖曳）`}
                 onClick={() => fRef.current._fileInput?.click()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -8734,11 +9196,14 @@ function ProfitCenter() {
               <OverviewDashboard
                 slData={slData}
                 spData={spData}
+                posData={posData}
                 slOrders={slOrders}
                 spOrders={spOrders}
+                posOrders={posOrders}
                 slCosts={slEffCosts}
                 spCosts={spEffCosts}
                 allMonthly={allMonthly}
+                monthlyByPlatform={{ sl: slMonthly, sp: spMonthly, pos: posMonthlyAll }}
                 theme={theme}
                 sY={sY}
                 sM={effM}
