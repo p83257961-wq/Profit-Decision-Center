@@ -153,13 +153,16 @@ const SL_SHIPPING_RATES = {
 };
 const SL_INTL_METHODS = ["EMS", "FEDEX", "中國", "新加坡", "國外"];
 
+/* KPI 2026-08-25 老闆拍板（用儀表板現行口徑計價）：官網 15、蝦皮 10、門市統一 12、
+   總覽綠線＝各平台目標×營收占比加權、紅線 12（廣告池熔斷）。營業費為老闆自調值勿改。 */
 const DEFAULT_FP_SL = {
   platformFeeRate: "1.0",
   opExpense: "30.0",
   tax: "6.2",
-  targetNet: "17.0",
+  targetNet: "15.0",
+  posTargetNet: "12.0",
 };
-const DEFAULT_FP_SP = { opExpense: "30.0", tax: "6.2", targetNet: "13.0" };
+const DEFAULT_FP_SP = { opExpense: "30.0", tax: "6.2", targetNet: "10.0" };
 
 const SK = {
   platform: "upc_platform_v1",
@@ -944,12 +947,14 @@ const PosKpi = ({ label, value, sub, color }) => (
     )}
   </div>
 );
-/* 門市沒有獨立淨利目標：用全公司底線 15% 當對照線（拍板框架：綜合淨利率 16/15） */
-const POS_NET_FLOOR = 0.15;
+/* 門市統一淨利目標（六通路一個數字，2026-08-25 老闆拍板 12%）：
+   側欄可調（slFp.posTargetNet），此常數只是無存值時的後備 */
+const POS_TARGET_DEFAULT = 0.12;
+const posTargetOf = (fp) => (parseFloat(fp?.posTargetNet) || 12) / 100;
 /* 門市三個指標的色彩門檻——Hero／KPI／通路拆解／總覽六通路表一律呼叫這三支，
    不各自寫死數字（2026-08-18 審查：三處門檻不一致導致同頁自相矛盾） */
-const posNetColor = (nm) =>
-  nm >= POS_NET_FLOOR ? "var(--up)" : nm >= 0.05 ? "var(--wn)" : "var(--dn)";
+const posNetColor = (nm, target = POS_TARGET_DEFAULT) =>
+  nm >= target ? "var(--up)" : nm >= 0.05 ? "var(--wn)" : "var(--dn)";
 const posGmColor = (gm) =>
   gm >= 0.45 ? "var(--up)" : gm >= 0.35 ? "var(--wn)" : "var(--dn)";
 const posCovColor = (cov) =>
@@ -966,6 +971,7 @@ function POSDashboard({
   accentBdr,
   opExpense,
   taxRate,
+  posTarget,
   isLocked,
   snapParams,
   onToggleSnap,
@@ -982,7 +988,7 @@ function POSDashboard({
   onToggleInvoice,
 }) {
   const s = data.summary;
-  const gapVal = s.netMargin - POS_NET_FLOOR;
+  const gapVal = s.netMargin - posTarget;
   const [q, setQ] = useState("");
   const dq = useDebounced(q);
   const [openId, setOpenId] = useState(null);
@@ -1000,7 +1006,7 @@ function POSDashboard({
     .filter((c) => !c.excluded)
     .map((c) => c.label)
     .join("＋");
-  const netColor = posNetColor(s.netMargin);
+  const netColor = posNetColor(s.netMargin, posTarget);
   const covColor = posCovColor(s.costCoverage);
   const cth = {
     padding: "9px 10px",
@@ -1310,7 +1316,7 @@ function POSDashboard({
               {s.coveredRev > 0 ? fmtP(s.netMargin) : "—"}
             </div>
             <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 4 }}>
-              全公司底線 {(POS_NET_FLOOR * 100).toFixed(0)}%　差距{" "}
+              門市目標 {(posTarget * 100).toFixed(0)}%　差距{" "}
               <span
                 style={{ color: gapVal >= 0 ? "var(--up)" : "var(--dn)" }}
               >
@@ -1572,7 +1578,7 @@ function POSDashboard({
                     <td
                       style={{
                         ...ctd,
-                        color: posNetColor(nm),
+                        color: posNetColor(nm, posTarget),
                         fontWeight: 700,
                       }}
                     >
@@ -2087,6 +2093,7 @@ function OverviewDashboard({
   slData,
   spData,
   posData,
+  posTarget,
   slOrders,
   spOrders,
   posOrders,
@@ -2155,6 +2162,16 @@ function OverviewDashboard({
   const totalRev = (slD?.rev || 0) + (spS?.tG || 0) + (posS?.rev || 0);
   const totalNet = (slD?.net || 0) + (spS?.afterComm || 0) + (posS?.net || 0);
   const totalNetMargin = totalRev > 0 ? totalNet / totalRev : 0;
+  /* 總覽綠線＝加權目標（各平台淨利目標 × 當期營收占比）：經銷等低利通路占比變大，
+     線自動下修，不用手動改；紅線 12% ＝廣告池熔斷線（2026-08-25 拍板） */
+  const OVERALL_RED = 0.12;
+  const weightedTarget =
+    totalRev > 0
+      ? ((slD?.rev || 0) * (slD?.targetNetRate ?? 0.15) +
+          (spS?.tG || 0) * (spS?.targetNet ?? 0.1) +
+          (posS?.rev || 0) * posTarget) /
+        totalRev
+      : 0;
   /* 範圍內平均營業費率：營收加權（各訂單已依所屬月份快照 % 計算），
      選整年即為 1-12 月的加權平均 */
   const totalOpex = (slD?.opExpTotal || 0) + (spS?.tOp || 0) + (posS?.op || 0);
@@ -2245,17 +2262,17 @@ function OverviewDashboard({
         platform: "蝦皮",
         msg: "有商品成本未填，淨利計算可能偏高",
       });
-    /* 門市（現場零售）對全公司底線 15%；算不出成本的單、虧損單（六通路）、經銷單淨利 */
+    /* 門市（現場零售）對門市統一目標；算不出成本的單、虧損單（六通路）、經銷單淨利 */
     {
       const r = posCh.find((c) => c.key === "retail");
       const rm = r && r.coveredRev > 0 ? r.coveredNet / r.coveredRev : null;
-      if (rm !== null && rm < POS_NET_FLOOR)
+      if (rm !== null && rm < posTarget)
         list.push({
           level: "warn",
           platform: "門市",
-          msg: `現場零售淨利率 ${fmtP(rm)} 低於全公司底線 ${(POS_NET_FLOOR * 100).toFixed(
+          msg: `現場零售淨利率 ${fmtP(rm)} 低於門市目標 ${(posTarget * 100).toFixed(
             0
-          )}%，差距 ${((POS_NET_FLOOR - rm) * 100).toFixed(1)}%`,
+          )}%，差距 ${((posTarget - rm) * 100).toFixed(1)}%`,
         });
     }
     if (posS && posS.noCostCount > 0)
@@ -2351,6 +2368,7 @@ function OverviewDashboard({
     }
     return list;
   }, [
+    posTarget,
     slD,
     spS,
     posS,
@@ -2501,14 +2519,14 @@ function OverviewDashboard({
     );
   }
 
-  /* 全公司年均目標 17%（OPEX 總帳進 32% 時達成）；15% 是全公司底線 */
+  /* 綠＝達加權目標；黃＝低於加權但守住紅線；紅＝跌破 12%（廣告池熔斷） */
   const overallStatus =
-    totalNetMargin >= 0.16
+    totalNetMargin >= weightedTarget
       ? { label: "整體健康", c: "var(--up)" }
-      : totalNetMargin >= 0.15
-      ? { label: "需要關注", c: "var(--wn)" }
+      : totalNetMargin >= OVERALL_RED
+      ? { label: "低於加權目標", c: "var(--wn)" }
       : totalNetMargin > 0
-      ? { label: "低於警戒", c: "var(--dn)" }
+      ? { label: "跌破紅線 12%", c: "var(--dn)" }
       : { label: "整體虧損", c: "var(--dn)" };
 
   return (
@@ -2652,7 +2670,7 @@ function OverviewDashboard({
                   marginBottom: 6,
                 }}
               >
-                綜合淨利率
+                綜合淨利率（加權目標 {(weightedTarget * 100).toFixed(1)}%）
               </div>
               <div
                 className="hero-pct-md"
@@ -2661,9 +2679,9 @@ function OverviewDashboard({
                   fontFamily: mono,
                   lineHeight: 1,
                   color:
-                    totalNetMargin >= 0.16
+                    totalNetMargin >= weightedTarget
                       ? "var(--up)"
-                      : totalNetMargin >= 0.15
+                      : totalNetMargin >= OVERALL_RED
                       ? "var(--wn)"
                       : "var(--dn)",
                 }}
@@ -2836,7 +2854,7 @@ function OverviewDashboard({
                 rev: slD?.rev || 0,
                 net: slD?.net || 0,
                 margin: slD?.trueNetMargin || 0,
-                target: slD?.targetNetRate || 0.17,
+                target: slD?.targetNetRate || 0.15,
                 orders: slD?.valid || 0,
                 opexRate:
                   slD && slD.rev > 0 ? slD.opExpTotal / slD.rev : 0,
@@ -2849,7 +2867,7 @@ function OverviewDashboard({
                 rev: spS?.tG || 0,
                 net: spS?.afterComm || 0,
                 margin: spS?.netMargin || 0,
-                target: spS?.targetNet || 0.13,
+                target: spS?.targetNet || 0.1,
                 orders: spS?.validN || 0,
                 opexRate: spS && spS.tG > 0 ? spS.tOp / spS.tG : 0,
                 aov: spS?.avgAOV || 0,
@@ -2861,8 +2879,8 @@ function OverviewDashboard({
                 rev: posRetail?.rev || 0,
                 net: posRetail?.coveredNet || 0,
                 margin: chNet(posRetail),
-                target: POS_NET_FLOOR,
-                targetLabel: "底線",
+                target: posTarget,
+                targetLabel: "目標",
                 orders: posRetail?.orders || 0,
                 opexRate:
                   posRetail && posRetail.rev > 0 ? posRetail.op / posRetail.rev : 0,
@@ -3092,7 +3110,7 @@ function OverviewDashboard({
                         ) : (
                           <>
                             淨利 {fmt$(c.coveredNet)}・
-                            <span style={{ color: c.coveredRev > 0 ? posNetColor(nm) : "var(--t4)", fontWeight: 700 }}>
+                            <span style={{ color: c.coveredRev > 0 ? posNetColor(nm, posTarget) : "var(--t4)", fontWeight: 700 }}>
                               {c.coveredRev > 0 ? fmtP(nm) : "—"}
                             </span>
                             {c.noCostCount > 0 ? `　缺成本 ${c.noCostCount}` : ""}
@@ -3284,7 +3302,7 @@ function OverviewDashboard({
                         style={{
                           ...cellR,
                           fontWeight: 700,
-                          color: nm === null ? "var(--t4)" : posNetColor(nm),
+                          color: nm === null ? "var(--t4)" : posNetColor(nm, posTarget),
                         }}
                       >
                         {nm === null ? "—" : fmtP(nm)}
@@ -3307,8 +3325,8 @@ function OverviewDashboard({
             </table>
           </div>
           <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 10, lineHeight: 1.6 }}>
-            門市無平台抽成；毛利率／淨利率只算成本齊全的單；稅只課有開發票的單。淨利率綠＝達全公司底線
-            {(POS_NET_FLOOR * 100).toFixed(0)}%。
+            門市無平台抽成；毛利率／淨利率只算成本齊全的單；稅只課有開發票的單。淨利率綠＝達門市目標
+            {(posTarget * 100).toFixed(0)}%（六通路同一把尺）。
             {posCh.some((c) => c.orders === 0) &&
               "　灰色通路＝本期還沒有訂單（員工開單時選對應付款方式就會出現）。"}
           </div>
@@ -4907,8 +4925,9 @@ function POSOrderDetail({ order, costsEff, recipes, components, onToggleInvoice 
 function ProfitCenter() {
   const [theme, setTheme] = useState(() => gl(SK.theme, "light"));
   const [platform, setPlatform] = useState(() => gl(SK.platform, "overview"));
-  const [slFp, setSlFp] = useState(() => gl(SK.slFp, DEFAULT_FP_SL));
-  const [spFp, setSpFp] = useState(() => gl(SK.spFp, DEFAULT_FP_SP));
+  /* 存值蓋過預設，但新欄位（posTargetNet）要從預設補進舊存檔 */
+  const [slFp, setSlFp] = useState(() => ({ ...DEFAULT_FP_SL, ...gl(SK.slFp, {}) }));
+  const [spFp, setSpFp] = useState(() => ({ ...DEFAULT_FP_SP, ...gl(SK.spFp, {}) }));
   const [slCosts, setSlCosts] = useState(() => gl(SK.slCosts, {}));
   const [spCosts, setSpCosts] = useState(() => gl(SK.spCosts, {}));
   const [slOrders, setSlOrders] = useState(() => gl(SK.slOrders, {}));
@@ -4929,6 +4948,8 @@ function ProfitCenter() {
     const v = gl(SK.posIncluded, ["retail"]);
     return Array.isArray(v) && v.length ? v : ["retail"];
   });
+  /* 門市運費：老闆 2026-08-19 拍板「不另計，視為含在內部營業費 % 裡」——
+     勿再提運費欄位／每筆扣運費的方案 */
 
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
@@ -5295,8 +5316,8 @@ function ProfitCenter() {
           const rMs = Number(metaData?.updatedAtMs || 0);
           if (metaData && rMs > lRMeta.current && rMs > lL.current) {
             applying.current = true;
-            if (metaData.slFp) setSlFp(metaData.slFp);
-            if (metaData.spFp) setSpFp(metaData.spFp);
+            if (metaData.slFp) setSlFp({ ...DEFAULT_FP_SL, ...metaData.slFp });
+            if (metaData.spFp) setSpFp({ ...DEFAULT_FP_SP, ...metaData.spFp });
             if (metaData.slCosts) setSlCosts(metaData.slCosts);
             if (metaData.spCosts) setSpCosts(metaData.spCosts);
             if (metaData.commissions) setCommissions(metaData.commissions);
@@ -6549,7 +6570,7 @@ function ProfitCenter() {
           .map((o) => o.date.substring(5, 7))
       ),
     ].sort();
-    const tnr = (parseFloat(slFp.targetNet) || 17) / 100;
+    const tnr = (parseFloat(slFp.targetNet) || 15) / 100;
     const mm = {};
     Object.keys(slCosts).forEach((k) => {
       const p = k.split("_");
@@ -6710,7 +6731,7 @@ function ProfitCenter() {
             ),
           ].sort()
         : [];
-    const targetNet = (parseFloat(spFp.targetNet) || 13) / 100;
+    const targetNet = (parseFloat(spFp.targetNet) || 10) / 100;
     const prods = {};
     let tG = 0,
       tV = 0,
@@ -9217,8 +9238,10 @@ function ProfitCenter() {
                       { l: "系統服務費率", n: "platformFeeRate" },
                     ]
                   : isPOS
-                  ? /* 門市無平台抽成、無系統費，只吃營業費與稅率（與官網同一組參數） */
+                  ? /* 門市無平台抽成、無系統費；營業費／稅率與官網同一組參數，
+                       淨利目標＝門市統一一個數字（六通路同尺，2026-08-25 拍板 12） */
                     [
+                      { l: "淨利目標（六通路統一）", n: "posTargetNet" },
                       { l: "內部營業費", n: "opExpense" },
                       { l: "預估稅率", n: "tax" },
                     ]
@@ -9365,6 +9388,7 @@ function ProfitCenter() {
                 slData={slData}
                 spData={spData}
                 posData={posData}
+                posTarget={posTargetOf(slFp)}
                 slOrders={slOrders}
                 spOrders={spOrders}
                 posOrders={posOrders}
@@ -9416,6 +9440,7 @@ function ProfitCenter() {
                   accentBdr={accentBdr}
                   opExpense={parseFloat(slFp.opExpense) || 0}
                   taxRate={parseFloat(slFp.tax) || 0}
+                  posTarget={posTargetOf(slFp)}
                   isLocked={isLocked}
                   snapParams={snapParams}
                   onToggleSnap={toggleSnap}
