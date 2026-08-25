@@ -154,7 +154,7 @@ const SL_SHIPPING_RATES = {
 const SL_INTL_METHODS = ["EMS", "FEDEX", "中國", "新加坡", "國外"];
 
 /* KPI 2026-08-25 老闆拍板（用儀表板現行口徑計價）：官網 15、蝦皮 10、門市統一 12、
-   總覽綠線＝各平台目標×營收占比加權、紅線 12（廣告池熔斷）。營業費為老闆自調值勿改。 */
+   總覽固定目標 12（綠 ≥12／黃 10–12 安全帶／紅 <10）。營業費為老闆自調值勿改。 */
 const DEFAULT_FP_SL = {
   platformFeeRate: "1.0",
   opExpense: "30.0",
@@ -2162,16 +2162,9 @@ function OverviewDashboard({
   const totalRev = (slD?.rev || 0) + (spS?.tG || 0) + (posS?.rev || 0);
   const totalNet = (slD?.net || 0) + (spS?.afterComm || 0) + (posS?.net || 0);
   const totalNetMargin = totalRev > 0 ? totalNet / totalRev : 0;
-  /* 總覽綠線＝加權目標（各平台淨利目標 × 當期營收占比）：經銷等低利通路占比變大，
-     線自動下修，不用手動改；紅線 12% ＝廣告池熔斷線（2026-08-25 拍板） */
-  const OVERALL_RED = 0.12;
-  const weightedTarget =
-    totalRev > 0
-      ? ((slD?.rev || 0) * (slD?.targetNetRate ?? 0.15) +
-          (spS?.tG || 0) * (spS?.targetNet ?? 0.1) +
-          (posS?.rev || 0) * posTarget) /
-        totalRev
-      : 0;
+  /* 總覽固定目標 12%、安全帶 10–12、紅線 10（2026-08-25 老闆拍板；加權線提案已否決） */
+  const OVERALL_TARGET = 0.12;
+  const OVERALL_RED = 0.1;
   /* 範圍內平均營業費率：營收加權（各訂單已依所屬月份快照 % 計算），
      選整年即為 1-12 月的加權平均 */
   const totalOpex = (slD?.opExpTotal || 0) + (spS?.tOp || 0) + (posS?.op || 0);
@@ -2519,14 +2512,14 @@ function OverviewDashboard({
     );
   }
 
-  /* 綠＝達加權目標；黃＝低於加權但守住紅線；紅＝跌破 12%（廣告池熔斷） */
+  /* 綠＝達目標 12；黃＝安全帶 10–12；紅＝跌破 10 */
   const overallStatus =
-    totalNetMargin >= weightedTarget
+    totalNetMargin >= OVERALL_TARGET
       ? { label: "整體健康", c: "var(--up)" }
       : totalNetMargin >= OVERALL_RED
-      ? { label: "低於加權目標", c: "var(--wn)" }
+      ? { label: "安全帶內", c: "var(--wn)" }
       : totalNetMargin > 0
-      ? { label: "跌破紅線 12%", c: "var(--dn)" }
+      ? { label: "跌破紅線 10%", c: "var(--dn)" }
       : { label: "整體虧損", c: "var(--dn)" };
 
   return (
@@ -2670,7 +2663,7 @@ function OverviewDashboard({
                   marginBottom: 6,
                 }}
               >
-                綜合淨利率（加權目標 {(weightedTarget * 100).toFixed(1)}%）
+                綜合淨利率（目標 12%）
               </div>
               <div
                 className="hero-pct-md"
@@ -2679,7 +2672,7 @@ function OverviewDashboard({
                   fontFamily: mono,
                   lineHeight: 1,
                   color:
-                    totalNetMargin >= weightedTarget
+                    totalNetMargin >= OVERALL_TARGET
                       ? "var(--up)"
                       : totalNetMargin >= OVERALL_RED
                       ? "var(--wn)"
@@ -9241,7 +9234,7 @@ function ProfitCenter() {
                   ? /* 門市無平台抽成、無系統費；營業費／稅率與官網同一組參數，
                        淨利目標＝門市統一一個數字（六通路同尺，2026-08-25 拍板 12） */
                     [
-                      { l: "淨利目標（六通路統一）", n: "posTargetNet" },
+                      { l: "淨利目標", n: "posTargetNet" },
                       { l: "內部營業費", n: "opExpense" },
                       { l: "預估稅率", n: "tax" },
                     ]
