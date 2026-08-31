@@ -179,6 +179,7 @@ const SK = {
   posOrders: "upc_pos_orders_v1",
   posCosts: "upc_pos_costs_v1",
   posRecipes: "upc_pos_recipes_v1",
+  posRatios: "upc_pos_ratios_v1",
   posIncluded: "upc_pos_included_v1",
   theme: "upc_theme_v1",
 };
@@ -981,6 +982,7 @@ function POSDashboard({
   costsEff,
   recipes,
   components,
+  ratios,
   monthly,
   sY,
   sM,
@@ -1241,6 +1243,12 @@ function POSDashboard({
           {s.lossCount > 0 && (
             <Tag v="bad">虧損 {s.lossCount} 筆</Tag>
           )}
+          {s.estCount > 0 && (
+            <Tag v="warn">
+              含估算成本 {s.estCount} 筆 ·{" "}
+              {fmtP(s.estShare)} 營收用成本率估
+            </Tag>
+          )}
           {s.coveredRev > 0 && (
             <span
               style={{
@@ -1250,8 +1258,8 @@ function POSDashboard({
               }}
             >
               {gapVal >= 0
-                ? `✓ 淨利率 ${fmtP(s.netMargin)}，高於全公司底線 ${(gapVal * 100).toFixed(1)}%`
-                : `⚠ 淨利率 ${fmtP(s.netMargin)}，距全公司底線差 ${Math.abs(gapVal * 100).toFixed(1)}%`}
+                ? `✓ 淨利率 ${fmtP(s.netMargin)}，高於門市目標 ${(gapVal * 100).toFixed(1)}%`
+                : `⚠ 淨利率 ${fmtP(s.netMargin)}，距門市目標差 ${Math.abs(gapVal * 100).toFixed(1)}%`}
             </span>
           )}
         </div>
@@ -1994,6 +2002,7 @@ function POSDashboard({
                               costsEff={costsEff}
                               recipes={recipes}
                               components={components}
+                              ratios={ratios}
                               onToggleInvoice={onToggleInvoice}
                             />
                           </td>
@@ -4163,7 +4172,30 @@ const spOrderFin = (order, fp, costsMap) => {
 /* ─── 門市 POS 單筆損益 ────────────────────────────────────────
    門市無平台抽成：毛利＝營收−商品成本；營業費沿用內部 %；
    稅只對「有開發票」的單課徵（老闆 2026-08-18 定案）。         */
-const posOrderFin = (order, fp, costsMap) => {
+/* ── 泛稱品項成本率（門市專用）──────────────────────────────────
+   2026-08-18 門市商品目錄上線前，員工只點得到「茶葉」「茶葉禮盒」這種泛稱，
+   沒有規格可回推單位成本，而且多數列是「數量 1、單價＝整筆金額」（少數顛倒）。
+   這類鍵改用成本率：單位成本＝該列單價 × 率，總成本＝單價 × 數量 × 率
+   ＝營收 × 率，與件數無關，單價/數量顛倒的列也算得對。
+   posRatios: { costKey: 百分比 }。
+   優先序：配方／手填成本永遠優先，率只在兩者都沒有時才生效——之後補了真成本，
+   率自動失效（不必刪），畫面與帳上永遠是同一個數字。 */
+const posRatioUnit = (item, costsMap, ratios) => {
+  /* 有真成本就不套率 */
+  if (Number(costsMap?.[item?.key]) > 0) return null;
+  const r = Number(ratios?.[item?.key]);
+  if (!(r > 0)) return null;
+  const price = Number(item?.price) || 0;
+  /* 單價 0 的列（結帳價全 0、營收靠等分攤）估不出來，仍算缺成本 */
+  return price > 0 ? price * (r / 100) : null;
+};
+const posItemUnit = (item, costsMap, ratios) => {
+  const real = Number(costsMap?.[item.key]) || 0;
+  if (real > 0) return real;
+  const rv = posRatioUnit(item, costsMap, ratios);
+  return rv !== null ? rv : 0;
+};
+const posOrderFin = (order, fp, costsMap, ratios) => {
   const st = safeText(order.status);
   const isCanc = st.includes("取消") || st.includes("退款") || st.includes("已退");
   const gross = numOrZero(order.revenue);
@@ -4175,14 +4207,25 @@ const posOrderFin = (order, fp, costsMap) => {
   const tx =
     ofp?.tax != null ? Number(ofp.tax) || 0 : parseFloat(fp.tax) || 0;
   let oCost = 0;
+  /* 估算成本金額（走成本率的部分）：讓畫面能誠實標示「這個數字含多少估的」 */
+  let est = 0;
   /* 沒有商品明細（交易有、明細沒對到）＝算不出成本，一律視為缺成本 */
   let missCost = !(order.items || []).length;
   (order.items || []).forEach((item) => {
     const has =
       Object.prototype.hasOwnProperty.call(item, "snapshotCost") &&
       item.snapshotCost !== null;
-    const unit = has ? Number(item.snapshotCost) || 0 : Number(costsMap[item.key]) || 0;
-    if (!has && !(Number(costsMap[item.key]) > 0)) missCost = true;
+    const real = Number(costsMap[item.key]) || 0;
+    const rUnit = has || real > 0 ? null : posRatioUnit(item, costsMap, ratios);
+    const unit = has
+      ? Number(item.snapshotCost) || 0
+      : real > 0
+      ? real
+      : rUnit !== null
+      ? rUnit
+      : 0;
+    if (!has && real <= 0 && rUnit === null) missCost = true;
+    if (!has && real <= 0 && rUnit !== null) est += rUnit * (item.qty || 1);
     oCost += unit * (item.qty || 1);
   });
   const gp = gross - oCost;
@@ -4193,6 +4236,8 @@ const posOrderFin = (order, fp, costsMap) => {
     isTest: gross > 0 && gross <= POS_TEST_MAX,
     gross,
     oCost,
+    estCost: est,
+    hasEst: est > 0,
     gp,
     opAmt,
     txAmt,
@@ -4675,12 +4720,26 @@ function OrderDetail({ order, isSL, slFp, slCosts, spCosts }) {
 
 /* 門市單筆訂單決策明細：版型同 OrderDetail（左 商品明細／右 損益拆解），
    差別在門市無平台抽成、稅只課開票單、成本來源顯示配方 */
-function POSOrderDetail({ order, costsEff, recipes, components, onToggleInvoice }) {
+function POSOrderDetail({
+  order,
+  costsEff,
+  recipes,
+  components,
+  ratios,
+  onToggleInvoice,
+}) {
   const has = (it) =>
     Object.prototype.hasOwnProperty.call(it, "snapshotCost") &&
     it.snapshotCost !== null;
   const unitOf = (it) =>
-    has(it) ? Number(it.snapshotCost) || 0 : Number(costsEff?.[it.key]) || 0;
+    has(it) ? Number(it.snapshotCost) || 0 : posItemUnit(it, costsEff, ratios);
+  /* 標籤必須與 unitOf 同源：已鎖快照 → 配方 → 手填 → 率 */
+  const rateOf = (it) =>
+    has(it) || Number(costsEff?.[it.key]) > 0
+      ? null
+      : posRatioUnit(it, costsEff, ratios) !== null
+      ? Number(ratios[it.key])
+      : null;
   const recipeOf = (key) => {
     const ls = recipes?.[key];
     if (!ls || !ls.length) return null;
@@ -4803,6 +4862,8 @@ function POSOrderDetail({ order, costsEff, recipes, components, onToggleInvoice 
                 >
                   {rc
                     ? `配方：${rc}`
+                    : rateOf(it)
+                    ? `⚠ 估算：成本率 ${rateOf(it)}%（無規格可查，按金額比例估）`
                     : u > 0
                     ? "手填成本"
                     : "無成本來源——到下方成本資料庫掛配方或填成本"}
@@ -4932,6 +4993,8 @@ function ProfitCenter() {
   const [posOrders, setPosOrders] = useState(() => gl(SK.posOrders, {}));
   const [posCosts, setPosCosts] = useState(() => gl(SK.posCosts, {}));
   const [posRecipes, setPosRecipes] = useState(() => gl(SK.posRecipes, {}));
+  /* 泛稱品項成本率 { costKey: % }：見 posRatioUnit */
+  const [posRatios, setPosRatios] = useState(() => gl(SK.posRatios, {}));
   /* 門市匯入：兩份 xls 分次拖入，先進暫存區、湊齊再 join */
   const posStage = useRef({ trans: null, orders: null });
   /* 門市通路過濾：KPI 預設只算「現場零售」（老闆 2026-08-18 定）；
@@ -5080,6 +5143,9 @@ function ProfitCenter() {
   useEffect(() => {
     persist(SK.posRecipes, posRecipes);
   }, [posRecipes, persist]);
+  useEffect(() => {
+    persist(SK.posRatios, posRatios);
+  }, [posRatios, persist]);
   useEffect(() => {
     persist(SK.posIncluded, posIncluded);
   }, [posIncluded, persist]);
@@ -5319,6 +5385,7 @@ function ProfitCenter() {
             if (metaData.spRecipes) setSpRecipes(metaData.spRecipes);
             if (metaData.posCosts) setPosCosts(metaData.posCosts);
             if (metaData.posRecipes) setPosRecipes(metaData.posRecipes);
+            if (metaData.posRatios) setPosRatios(metaData.posRatios);
             if (Array.isArray(metaData.posIncluded) && metaData.posIncluded.length)
               setPosIncluded(metaData.posIncluded);
             lRMeta.current = rMs;
@@ -5493,6 +5560,7 @@ function ProfitCenter() {
           spRecipes,
           posCosts,
           posRecipes,
+          posRatios,
           posIncluded,
           updatedAtMs: ms,
           updatedBy: meta.current.clientId,
@@ -5601,6 +5669,7 @@ function ProfitCenter() {
     posOrders,
     posCosts,
     posRecipes,
+    posRatios,
     posIncluded,
     aReady,
     cReady,
@@ -6350,6 +6419,9 @@ function ProfitCenter() {
       testCount: 0,
       noCostRev: 0,
       noCostCount: 0,
+      estRev: 0,
+      estCost: 0,
+      estCount: 0,
       invoiceRev: 0,
       totalQty: 0,
       coveredRev: 0,
@@ -6374,6 +6446,9 @@ function ProfitCenter() {
         qty: 0,
         noCostRev: 0,
         noCostCount: 0,
+        estRev: 0,
+        estCost: 0,
+        estCount: 0,
         invoiceRev: 0,
         coveredRev: 0,
         coveredGp: 0,
@@ -6387,7 +6462,7 @@ function ProfitCenter() {
     const ol = [];
     all.forEach((order) => {
       if (!inPeriod(order.date)) return;
-      const fin = posOrderFin(order, slFp, posEffCosts);
+      const fin = posOrderFin(order, slFp, posEffCosts, posRatios);
       t.rawTotal += fin.gross;
       if (fin.isCanc) {
         t.cancelledTotal += fin.gross;
@@ -6421,6 +6496,12 @@ function ProfitCenter() {
         ch.coveredOp += fin.opAmt;
         ch.coveredTax += fin.txAmt;
         if (fin.finalNet < 0) ch.lossCount++;
+        /* 這筆的成本含估算（走成本率）——毛利率/淨利率會受影響，畫面要標明 */
+        if (fin.hasEst) {
+          ch.estRev += fin.gross;
+          ch.estCost += fin.estCost;
+          ch.estCount++;
+        }
       }
       if (order.hasInvoice) ch.invoiceRev += fin.gross;
       /* 訂單明細表列出「所有」有效訂單（含未計入 KPI 的通路，畫面上會灰掉標示）——
@@ -6433,6 +6514,8 @@ function ProfitCenter() {
         taxAmt: fin.txAmt,
         net: fin.finalNet,
         missCost: fin.missCost,
+        hasEst: fin.hasEst,
+        estCost: fin.estCost,
         excludedCh: excluded,
         swapSuspect: posSwapSuspect(order.items),
         channelLabel: posChannelLabel(order.channel),
@@ -6455,7 +6538,7 @@ function ProfitCenter() {
           it.snapshotCost !== null;
         const unit = has
           ? Number(it.snapshotCost) || 0
-          : Number(posEffCosts[it.key]) || 0;
+          : posItemUnit(it, posEffCosts, posRatios);
         const ir = evenSplit
           ? (fin.gross * (it.qty || 1)) / qtySum
           : (Number(it.price) || 0) * (it.qty || 1) * scale;
@@ -6494,6 +6577,11 @@ function ProfitCenter() {
         t.coveredOp += fin.opAmt;
         t.coveredTax += fin.txAmt;
         if (fin.finalNet < 0) t.lossCount++;
+        if (fin.hasEst) {
+          t.estRev += fin.gross;
+          t.estCost += fin.estCost;
+          t.estCount++;
+        }
       }
       if (order.hasInvoice) t.invoiceRev += fin.gross;
     });
@@ -6520,10 +6608,12 @@ function ProfitCenter() {
         netMargin: t.coveredRev > 0 ? t.coveredNet / t.coveredRev : 0,
         aov: t.valid > 0 ? t.rev / t.valid : 0,
         costCoverage: t.rev > 0 ? covered / t.rev : 0,
+        /* 覆蓋率中有多少是「用成本率估的」——毛利率／淨利率的可信度指標 */
+        estShare: t.coveredRev > 0 ? t.estRev / t.coveredRev : 0,
         invoiceRate: t.rev > 0 ? t.invoiceRev / t.rev : 0,
       },
     };
-  }, [posOrders, posEffCosts, slFp, inPeriod, posIncluded]);
+  }, [posOrders, posEffCosts, posRatios, slFp, inPeriod, posIncluded]);
 
   /* 門市每月營收／淨利（環比同比用；門市頁＝計入的通路；總覽＝全部通路）。
      淨利只算成本齊全的單 */
@@ -6534,7 +6624,7 @@ function ProfitCenter() {
         const ym = String(o.date || "").substring(0, 7);
         if (ym.length < 7) return;
         if (channelFilter && !channelFilter.includes(o.channel)) return;
-        const fin = posOrderFin(o, slFp, posEffCosts);
+        const fin = posOrderFin(o, slFp, posEffCosts, posRatios);
         if (fin.isCanc || fin.isTest) return;
         if (!map[ym]) map[ym] = { rev: 0, net: 0 };
         map[ym].rev += fin.gross;
@@ -6542,7 +6632,7 @@ function ProfitCenter() {
       });
       return map;
     },
-    [posOrders, slFp, posEffCosts]
+    [posOrders, slFp, posEffCosts, posRatios]
   );
   const posMonthly = useMemo(
     () => buildPosMonthly(posIncluded),
@@ -7122,6 +7212,8 @@ function ProfitCenter() {
 
   const missCost = useMemo(() => {
     const miss = matrixList.filter((p) => {
+      /* 門市掛了成本率的泛稱鍵＝有估算成本，不算未填 */
+      if (isPOS && Number(posRatios[p.key]) > 0) return false;
       const v = costsEff[p.key];
       return v === undefined || v === null || v === "" || Number(v) === 0;
     });
@@ -7130,7 +7222,7 @@ function ProfitCenter() {
       n: miss.length,
       keys: new Set(miss.map((p) => p.key)),
     };
-  }, [matrixList, costsEff]);
+  }, [matrixList, costsEff, isPOS, posRatios]);
 
   const filteredOrders = useMemo(() => {
     if (!currentData) return [];
@@ -7297,14 +7389,24 @@ function ProfitCenter() {
                 tax: numOrNull(fp.tax),
                 targetNet: numOrNull(fp.targetNet),
               },
-              items: (tg.items || []).map((i) => ({
-                ...i,
-                /* 快照凍結「有效成本」（配方算出的數字），之後改組件不影響本期 */
-                snapshotCost:
-                  costsEff[i.key] === undefined
-                    ? null
-                    : Number(costsEff[i.key]),
-              })),
+              items: (tg.items || []).map((i) => {
+                /* 快照凍結「有效成本」（配方算出的數字），之後改組件不影響本期；
+                   泛稱鍵凍結的是「該列單價×成本率」算出的估算單位成本 */
+                const rUnit = isPOS
+                  ? posRatioUnit(i, costsEff, posRatios)
+                  : null;
+                return {
+                  ...i,
+                  snapshotCost:
+                    costsEff[i.key] !== undefined && Number(costsEff[i.key]) > 0
+                      ? Number(costsEff[i.key])
+                      : rUnit !== null
+                      ? rUnit
+                      : costsEff[i.key] === undefined
+                      ? null
+                      : Number(costsEff[i.key]),
+                };
+              }),
             };
           }
         });
@@ -7349,6 +7451,7 @@ function ProfitCenter() {
       costs,
       recipes,
       components,
+      ...(isPOS ? { ratios: posRatios } : {}),
     };
     const b = new Blob([JSON.stringify(bundle, null, 2)], {
       type: "application/json",
@@ -7374,6 +7477,8 @@ function ProfitCenter() {
           if (parsed.recipes) setRecipes((p) => ({ ...p, ...parsed.recipes }));
           if (parsed.components)
             setComponents((p) => ({ ...p, ...parsed.components }));
+          if (isPOS && parsed.ratios)
+            setPosRatios((p) => ({ ...p, ...parsed.ratios }));
           toast("成本＋配方＋原料庫還原成功", { type: "success" });
         } else {
           /* 舊版備份＝純成本表 */
@@ -7652,10 +7757,11 @@ function ProfitCenter() {
   );
   const commitCost = useCallback(
     (key, n) => {
-      const setter = isSL ? setSlCosts : setSpCosts;
+      /* 門市要寫 posCosts——原本只分 isSL/否，門市手填會寫進蝦皮成本表（打完就不見） */
+      const setter = isPOS ? setPosCosts : isSL ? setSlCosts : setSpCosts;
       setter((pr) => ({ ...pr, [key]: n }));
     },
-    [isSL]
+    [isSL, isPOS]
   );
   /* 門市發票判定手動覆寫（逐單；reset＝恢復自動判定）。稅是即時算的，不受快照凍結 */
   const togglePosInvoice = useCallback((orderId, mode) => {
@@ -7686,6 +7792,12 @@ function ProfitCenter() {
       /* 門市沿用官網那組參數（營業費／稅率是全公司共用口徑） */
       const setter = isSL || isPOS ? setSlFp : setSpFp;
       setter((p) => ({ ...p, [field]: v }));
+      /* 內部營業費全通路一致（老闆 2026-08-31 明示）：在任何一頁改都同步另一組，
+         避免官網/門市 41、蝦皮還停在舊值這種無聲分岔。已鎖定期間不受影響（吃快照）。 */
+      if (field === "opExpense") {
+        const other = isSL || isPOS ? setSpFp : setSlFp;
+        other((p) => (p.opExpense === v ? p : { ...p, opExpense: v }));
+      }
     },
     [isSL, isPOS]
   );
@@ -7727,6 +7839,214 @@ function ProfitCenter() {
     : isSL
     ? "var(--accent-bdr)"
     : "var(--sp-accent-bdr)";
+
+  /* ─── 泛稱品項成本率卡（門市專用）─────────────────────────────
+     8/18 商品目錄上線前員工只點得到「茶葉」這種泛稱，回推不出單位成本，
+     改用「成本率」估：成本＝該列營收×率。建議值＝本期成本齊全訂單的實測平均。 */
+  const posRatioSuggest = useMemo(() => {
+    if (!isPOS || !posData) return null;
+    /* 只用「成本全部來自配方／手填」的訂單當基準——把估算單算進來會自我循環：
+       套了率的單變成 covered，下次算出來的「實測平均」就含自己的估算值。
+       同理只取現場零售（經銷成本率天生高很多，混進來會拉高估算）。 */
+    const agg = { retail: { rev: 0, cost: 0, n: 0 }, all: { rev: 0, cost: 0, n: 0 } };
+    (posData.orderList || []).forEach((o) => {
+      if (o.missCost || o.hasEst || !(o.revenue > 0)) return;
+      const add = (a) => {
+        a.rev += o.revenue;
+        a.cost += o.oCost;
+        a.n++;
+      };
+      add(agg.all);
+      if (o.channel === "retail") add(agg.retail);
+    });
+    const pick =
+      agg.retail.n >= 5 ? { ...agg.retail, scope: "現場零售" } : { ...agg.all, scope: "全部通路" };
+    if (!(pick.rev > 0)) return null;
+    const rate = (pick.cost / pick.rev) * 100;
+    if (!(rate > 0 && rate < 100)) return null;
+    /* 對照組：經銷單的實測成本率（頁尾說明用，不寫死數字） */
+    const d = { rev: 0, cost: 0, n: 0 };
+    (posData.orderList || []).forEach((o) => {
+      if (o.missCost || o.hasEst || o.channel !== "dealer" || !(o.revenue > 0)) return;
+      d.rev += o.revenue;
+      d.cost += o.oCost;
+      d.n++;
+    });
+    return {
+      rate: Math.round(rate * 10) / 10,
+      scope: pick.scope,
+      n: pick.n,
+      dealer: d.rev > 0 ? Math.round((d.cost / d.rev) * 1000) / 10 : null,
+      dealerN: d.n,
+    };
+  }, [isPOS, posData]);
+  const posRatioRows = useMemo(() => {
+    if (!isPOS) return [];
+    return matrixList
+      .filter(
+        (p) =>
+          Number(posRatios[p.key]) > 0 ||
+          (!(posRecipes[p.key] || []).length && !(Number(posCosts[p.key]) > 0))
+      )
+      .sort((a, b) => (b.totalRevenue || 0) - (a.totalRevenue || 0));
+  }, [isPOS, matrixList, posRatios, posRecipes, posCosts]);
+  const commitRatio = useCallback((key, v) => {
+    setPosRatios((p) => {
+      const n = { ...p };
+      if (!(v > 0)) delete n[key];
+      else n[key] = v;
+      return n;
+    });
+  }, []);
+  const posRatioCard =
+    isPOS && posRatioRows.length > 0 ? (
+      <div
+        className="f4"
+        style={{
+          background: "var(--s1)",
+          border: "1px solid var(--s3)",
+          borderRadius: 16,
+          padding: 24,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+            marginBottom: 12,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--t1)" }}>
+              泛稱品項・成本率估算
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--t3)",
+                marginTop: 4,
+                lineHeight: 1.7,
+              }}
+            >
+              沒有規格可查的品項（例：「茶葉」）用成本率估：成本＝該筆營收 ×
+              率。填了率就不算未填成本，明細會標「估」。
+            </div>
+          </div>
+          {posRatioSuggest && (
+            <Btn
+              v="primary"
+              onClick={() =>
+                setPosRatios((p) => {
+                  const n = { ...p };
+                  let filled = 0;
+                  /* 只填「還沒有率」的列——不覆蓋老闆手調過的數字 */
+                  posRatioRows.forEach((r) => {
+                    if (!(Number(n[r.key]) > 0)) {
+                      n[r.key] = posRatioSuggest.rate;
+                      filled++;
+                    }
+                  });
+                  toast(
+                    filled > 0
+                      ? `已填入 ${filled} 項（已手調的不動）`
+                      : "每一項都已經有率了，未變更",
+                    { type: filled > 0 ? "success" : "info" }
+                  );
+                  return n;
+                })
+              }
+              title={`基準＝本期「成本全部來自配方／手填」的${posRatioSuggest.scope}訂單 ${posRatioSuggest.n} 筆，不含任何估算值`}
+            >
+              空白處填入實測平均 {posRatioSuggest.rate}%
+            </Btn>
+          )}
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: "left" }}>商品（本期無成本來源）</th>
+                <th style={th}>本期營收</th>
+                <th style={th}>成本率 %</th>
+                <th style={th}>估算成本</th>
+                <th style={th}>估算毛利率</th>
+              </tr>
+            </thead>
+            <tbody>
+              {posRatioRows.map((p) => {
+                const rate = Number(posRatios[p.key]) || 0;
+                const rev = p.totalRevenue || 0;
+                return (
+                  <tr key={p.key} style={{ borderTop: "1px solid var(--s3)" }}>
+                    <td style={{ ...td2, textAlign: "left" }}>
+                      <div style={{ fontWeight: 600, color: "var(--t1)" }}>
+                        {p.name}
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--t4)" }}>
+                        {p.option || "標準規格"}　{p.soldQty || 0} 件
+                      </div>
+                    </td>
+                    <td style={{ ...td2, fontFamily: mono }}>{fmt$(rev)}</td>
+                    <td style={td2}>
+                      <CostInput
+                        costKey={p.key}
+                        label={`${p.name} 成本率（%）`}
+                        value={posRatios[p.key]}
+                        miss={!(rate > 0)}
+                        onCommit={commitRatio}
+                      />
+                    </td>
+                    {/* 估算成本／毛利率直接取引擎算出來的值（p.totalCost 已含折扣攤分口徑），
+                        不在卡片裡另算一次，避免同一頁出現兩個不一樣的毛利率 */}
+                    <td style={{ ...td2, fontFamily: mono }}>
+                      {rate > 0 ? fmt$(p.totalCost || 0) : "—"}
+                    </td>
+                    <td
+                      style={{
+                        ...td2,
+                        fontFamily: mono,
+                        fontWeight: 700,
+                        color:
+                          rate > 0 && rev > 0
+                            ? posGmColor((rev - (p.totalCost || 0)) / rev)
+                            : "var(--t4)",
+                      }}
+                    >
+                      {rate > 0 && rev > 0
+                        ? fmtP((rev - (p.totalCost || 0)) / rev)
+                        : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div
+          style={{
+            fontSize: 10,
+            color: "var(--t4)",
+            marginTop: 10,
+            lineHeight: 1.7,
+          }}
+        >
+          率只在「沒有配方也沒有手填成本」時生效——之後補了配方或成本，配方優先、率自動失效（不必刪）。
+          估算成本會跟著鎖定快照凍結。
+          {posRatioSuggest && (
+            <>
+              　建議值基準＝本期「成本全部來自配方／手填」的{posRatioSuggest.scope}訂單{" "}
+              {posRatioSuggest.n} 筆，不含任何估算值。
+              {posRatioSuggest.dealer !== null &&
+                `　對照：經銷單實測成本率 ${posRatioSuggest.dealer}%（${posRatioSuggest.dealerN} 筆）——泛稱鍵若混了經銷單，估出來會偏樂觀。`}
+            </>
+          )}
+          　有正規品名＋規格的品項請掛配方，不要用率——率是給「查不出賣了什麼」的泛稱鍵用的。
+        </div>
+      </div>
+    ) : null;
 
   /* ─── 商品成本資料庫卡（官網／蝦皮／門市三處共用：手填成本＋配方編輯器＋原料庫＋備份還原） ── */
   const costMatrixCard = (
@@ -8485,6 +8805,25 @@ function ProfitCenter() {
                                           —
                                         </span>
                                       )}
+                                      {/* 掛了率的門市鍵：標「估 X%」但輸入框保留——填了手填成本，
+                                          率自動失效（優先序：配方 > 手填 > 率） */}
+                                      {isPOS &&
+                                        Number(posRatios[p.key]) > 0 &&
+                                        !hasRecipe &&
+                                        !(Number(costs[p.key]) > 0) && (
+                                          <span
+                                            title="目前用成本率估算（上方「泛稱品項成本率」卡調整）。在右邊填入單位成本即可改用真成本，率自動失效"
+                                            style={{
+                                              fontFamily: mono,
+                                              fontWeight: 700,
+                                              fontSize: 11,
+                                              color: "var(--wn)",
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            估 {Number(posRatios[p.key])}%
+                                          </span>
+                                        )}
                                       {hasRecipe ? (
                                         <span
                                           role="button"
@@ -9154,6 +9493,13 @@ function ProfitCenter() {
                       （與官網共用同一組）
                     </span>
                   )}
+                  {!isPOS && (
+                    <span
+                      style={{ fontWeight: 500, color: "var(--t4)", fontSize: 10 }}
+                    >
+                      （內部營業費全通路一致）
+                    </span>
+                  )}
                 </div>
                 {snapParams && (
                   <div
@@ -9443,6 +9789,7 @@ function ProfitCenter() {
                   costsEff={posEffCosts}
                   recipes={posRecipes}
                   components={components}
+                  ratios={posRatios}
                   monthly={posMonthly}
                   sY={sY}
                   sM={effM}
@@ -9457,6 +9804,7 @@ function ProfitCenter() {
                       : `${sY}-${effM}`
                   }
                 />
+                {posRatioCard}
                 {costMatrixCard}
               </>
             ) : (
