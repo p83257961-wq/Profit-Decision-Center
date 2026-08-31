@@ -4982,6 +4982,9 @@ function ProfitCenter() {
   /* 存值蓋過預設，但新欄位（posTargetNet）要從預設補進舊存檔 */
   const [slFp, setSlFp] = useState(() => ({ ...DEFAULT_FP_SL, ...gl(SK.slFp, {}) }));
   const [spFp, setSpFp] = useState(() => ({ ...DEFAULT_FP_SP, ...gl(SK.spFp, {}) }));
+  /* 內部營業費／預估稅率＝全公司單一口徑（老闆 2026-08-31 明示「全通路一致」），
+     唯一來源是 slFp，只在官網頁可編輯；蝦皮、門市讀同一份值、畫面上唯讀顯示。
+     spFp 只留自己的淨利目標（仍同步寫入 opExpense/tax 讓備份檔向下相容）。 */
   const [slCosts, setSlCosts] = useState(() => gl(SK.slCosts, {}));
   const [spCosts, setSpCosts] = useState(() => gl(SK.spCosts, {}));
   const [slOrders, setSlOrders] = useState(() => gl(SK.slOrders, {}));
@@ -6391,6 +6394,11 @@ function ProfitCenter() {
     () => resolveCosts(spCosts, spRecipes, components),
     [spCosts, spRecipes, components]
   );
+  /* 蝦皮實際採用的費率參數：淨利目標用自己的，營業費／稅率吃全公司口徑（slFp） */
+  const spFpEff = useMemo(
+    () => ({ ...spFp, opExpense: slFp.opExpense, tax: slFp.tax }),
+    [spFp, slFp.opExpense, slFp.tax]
+  );
   const posEffCosts = useMemo(
     () => resolveCosts(posCosts, posRecipes, components),
     [posCosts, posRecipes, components]
@@ -6814,7 +6822,7 @@ function ProfitCenter() {
             ),
           ].sort()
         : [];
-    const targetNet = (parseFloat(spFp.targetNet) || 10) / 100;
+    const targetNet = (parseFloat(spFpEff.targetNet) || 10) / 100;
     const prods = {};
     let tG = 0,
       tV = 0,
@@ -6829,7 +6837,7 @@ function ProfitCenter() {
     const filtered = all.filter((o) => inPeriod(o.date));
     const orderList = filtered
       .map((order) => {
-        const fin = spOrderFin(order, spFp, spEffCosts);
+        const fin = spOrderFin(order, spFpEff, spEffCosts);
         if (fin.isCanc) return null;
         if (fin.isRef) {
           refundN++;
@@ -6930,7 +6938,7 @@ function ProfitCenter() {
         voucherRate: tG > 0 ? tV / tG : 0,
       },
     };
-  }, [spOrders, sY, sM, spFp, spEffCosts, commissions, range, inPeriod]);
+  }, [spOrders, sY, sM, spFpEff, spEffCosts, commissions, range, inPeriod]);
 
   /* ─── 每月營收/淨利彙總（環比/同比用；已扣分潤） ────────── */
   const slMonthly = useMemo(() => {
@@ -6952,7 +6960,7 @@ function ProfitCenter() {
     Object.values(spOrders).forEach((o) => {
       const ym = String(o.date || "").substring(0, 7);
       if (ym.length < 7) return;
-      const fin = spOrderFin(o, spFp, spEffCosts);
+      const fin = spOrderFin(o, spFpEff, spEffCosts);
       if (fin.isCanc || fin.isRef) return;
       if (!map[ym]) map[ym] = { rev: 0, net: 0 };
       map[ym].rev += fin.gross;
@@ -6965,7 +6973,7 @@ function ProfitCenter() {
       map[k].net -= Number(v) || 0;
     });
     return map;
-  }, [spOrders, spFp, spEffCosts, commissions]);
+  }, [spOrders, spFpEff, spEffCosts, commissions]);
 
   /* 三通路合計月表（總覽環比同比／趨勢淨利線用；門市＝全部通路、淨利只算成本齊全單） */
   const allMonthly = useMemo(() => {
@@ -7359,8 +7367,9 @@ function ProfitCenter() {
     }
     const wasLocked = isLocked;
     const apply = () => {
-      /* 門市沿用官網的營業費／稅率參數（無平台抽成，platformFeeRate 不適用） */
-      const fp = isSL || isPOS ? slFp : spFp;
+      /* 門市沿用官網的營業費／稅率參數（無平台抽成，platformFeeRate 不適用）；
+         蝦皮的營業費／稅率也吃全公司口徑（spFpEff） */
+      const fp = isSL || isPOS ? slFp : spFpEff;
       const setter = isPOS ? setPosOrders : isSL ? setSlOrders : setSpOrders;
       /* functional update：以「按下確定當下」的最新訂單集為基底，
          避免確認框開啟期間遠端同步進來的訂單被過期閉包覆蓋 */
@@ -7416,7 +7425,7 @@ function ProfitCenter() {
         type: "success",
       });
     };
-    const fp = isSL || isPOS ? slFp : spFp;
+    const fp = isSL || isPOS ? slFp : spFpEff;
     const curLine = `營業費 ${fp.opExpense}%・稅率 ${fp.tax}%${
       isSL ? `・系統費 ${fp.platformFeeRate}%` : ""
     }${isPOS ? "（門市：稅只課有開發票的單）" : ""}`;
@@ -7792,11 +7801,11 @@ function ProfitCenter() {
       /* 門市沿用官網那組參數（營業費／稅率是全公司共用口徑） */
       const setter = isSL || isPOS ? setSlFp : setSpFp;
       setter((p) => ({ ...p, [field]: v }));
-      /* 內部營業費全通路一致（老闆 2026-08-31 明示）：在任何一頁改都同步另一組，
-         避免官網/門市 41、蝦皮還停在舊值這種無聲分岔。已鎖定期間不受影響（吃快照）。 */
-      if (field === "opExpense") {
-        const other = isSL || isPOS ? setSpFp : setSlFp;
-        other((p) => (p.opExpense === v ? p : { ...p, opExpense: v }));
+      /* 內部營業費／預估稅率全通路一致（老闆 2026-08-31 明示）：唯一來源是 slFp，
+         只有官網頁能改；這裡把值鏡射進 spFp，讓備份檔／舊版讀到的仍是同一組數字。
+         已鎖定期間不受影響（吃快照）。 */
+      if ((field === "opExpense" || field === "tax") && (isSL || isPOS)) {
+        setSpFp((p) => (p[field] === v ? p : { ...p, [field]: v }));
       }
     },
     [isSL, isPOS]
@@ -9486,18 +9495,11 @@ function ProfitCenter() {
                   }}
                 >
                   <Settings size={12} /> 財務模型參數
-                  {isPOS && (
+                  {isSL && (
                     <span
                       style={{ fontWeight: 500, color: "var(--t4)", fontSize: 10 }}
                     >
-                      （與官網共用同一組）
-                    </span>
-                  )}
-                  {!isPOS && (
-                    <span
-                      style={{ fontWeight: 500, color: "var(--t4)", fontSize: 10 }}
-                    >
-                      （內部營業費全通路一致）
+                      （營業費／稅率＝全公司共用）
                     </span>
                   )}
                 </div>
@@ -9569,6 +9571,8 @@ function ProfitCenter() {
                     </div>
                   </div>
                 )}
+                {/* 內部營業費／預估稅率＝全公司單一口徑，只在官網頁開放編輯，
+                    其他兩頁顯示唯讀（老闆 2026-09-01：不用三個平台各出現一次） */}
                 {(isSL
                   ? [
                       { l: "淨利目標", n: "targetNet" },
@@ -9577,18 +9581,9 @@ function ProfitCenter() {
                       { l: "系統服務費率", n: "platformFeeRate" },
                     ]
                   : isPOS
-                  ? /* 門市無平台抽成、無系統費；營業費／稅率與官網同一組參數，
-                       淨利目標＝門市統一一個數字（六通路同尺，2026-08-25 拍板 12） */
-                    [
-                      { l: "淨利目標", n: "posTargetNet" },
-                      { l: "內部營業費", n: "opExpense" },
-                      { l: "預估稅率", n: "tax" },
-                    ]
-                  : [
-                      { l: "淨利目標", n: "targetNet" },
-                      { l: "內部營業費", n: "opExpense" },
-                      { l: "預估稅率", n: "tax" },
-                    ]
+                  ? /* 門市無平台抽成、無系統費；淨利目標＝六通路統一一個數字（2026-08-25 拍板 12） */
+                    [{ l: "淨利目標", n: "posTargetNet" }]
+                  : [{ l: "淨利目標", n: "targetNet" }]
                 ).map((item) => (
                   <div
                     key={item.n}
@@ -9624,6 +9619,28 @@ function ProfitCenter() {
                     </div>
                   </div>
                 ))}
+                {!isSL && (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--t3)",
+                      lineHeight: 1.8,
+                      padding: "7px 0 0",
+                    }}
+                  >
+                    內部營業費{" "}
+                    <b style={{ fontFamily: mono, color: "var(--t1)" }}>
+                      {slFp.opExpense}%
+                    </b>
+                    ・預估稅率{" "}
+                    <b style={{ fontFamily: mono, color: "var(--t1)" }}>
+                      {slFp.tax}%
+                    </b>
+                    <div style={{ fontSize: 10, color: "var(--t4)" }}>
+                      全公司共用一組，到「官網」頁調整
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Commission Panel (Shopee only) */}
