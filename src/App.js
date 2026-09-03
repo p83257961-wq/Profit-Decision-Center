@@ -241,6 +241,12 @@ const numOrZero = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 const safeText = (v) => String(v ?? "").trim();
+/* 今天所在的年／月（畫面預設期間用）。老闆 2026-09-03：進來就要停在當月，
+   沒資料就顯示空白等匯入，不要自動退回上個月或整年 */
+const nowYM = () => {
+  const d = new Date();
+  return { y: String(d.getFullYear()), m: String(d.getMonth() + 1).padStart(2, "0") };
+};
 /* 欄名比對：忽略所有空白字元。平台偶爾會把「退貨 / 退款狀態」改成「退貨/退款狀態」，
    精確比對會靜默失效（整欄變 0／空字串）而且不會有任何警告 */
 const nzKey = (s) => safeText(s).replace(/\s+/g, "");
@@ -1349,7 +1355,9 @@ function POSDashboard({
             </Tag>
           )}
           <Tag v="default">計入 {scopeLabel || "—"}</Tag>
-          {missN > 0 && (
+          {/* 已鎖定的期間成本已凍結，不再提醒補成本（老闆 2026-09-03：
+              鎖定後還叫人回頭處理以前的沒必要） */}
+          {missN > 0 && !isLocked && (
             <Tag v="warn" style={{ cursor: "pointer" }} onClick={onJumpMiss}>
               <AlertCircle size={10} /> 未填成本 {missN} 項
             </Tag>
@@ -5131,8 +5139,9 @@ function ProfitCenter() {
   const [toasts, setToasts] = useState([]);
   const toastIdRef = useRef(0);
   const [confirmBox, setConfirmBox] = useState(null);
-  const [sY, setSY] = useState("All");
-  const [sM, setSM] = useState("All");
+  /* 預設期間＝當月（不是資料裡的最新月）：進來就停在這個月，沒匯報表就顯示空白 */
+  const [sY, setSY] = useState(() => nowYM().y);
+  const [sM, setSM] = useState(() => nowYM().m);
   const [range, setRange] = useState({ from: "", to: "" });
   const [search, setSearch] = useState("");
   const [mSearch, setMSearch] = useState("");
@@ -6587,8 +6596,15 @@ function ProfitCenter() {
         .filter(Boolean)
     );
   }, [platform, posOrders, slOrders, spOrders, sY]);
+  /* 該平台在所選月份沒資料時退成「全月份」，避免切平台看到一片 0（2026-08-18 定）。
+     **例外：當月不退**——當月本來就可能還沒匯報表，退成全年會把上個月的數字端出來，
+     老闆要的是空白等匯入（2026-09-03） */
+  const curYM = nowYM();
+  const isCurMonth = sY === curYM.y && sM === curYM.m;
   const effM =
-    sM !== "All" && monthsOfPlatform && !monthsOfPlatform.has(sM) ? "All" : sM;
+    sM !== "All" && !isCurMonth && monthsOfPlatform && !monthsOfPlatform.has(sM)
+      ? "All"
+      : sM;
 
   const inPeriod = useCallback(
     (d) => {
@@ -7247,7 +7263,7 @@ function ProfitCenter() {
     : isOverview
     ? null
     : spData;
-  const aY = isOverview
+  const aY0 = isOverview
     ? [
         ...new Set([
           ...(slData?.years || []),
@@ -7258,7 +7274,11 @@ function ProfitCenter() {
         .sort()
         .reverse()
     : (isPOS ? posData : isSL ? slData : spData)?.years || [];
-  const aM = isOverview
+  /* 當年／當月一定要在下拉裡，否則「停在當月」時選單會顯示不出目前選的是什麼 */
+  const aY = aY0.includes(curYM.y)
+    ? aY0
+    : [...aY0, curYM.y].sort().reverse();
+  const aM0 = isOverview
     ? sY !== "All" && sY !== "Custom"
       ? [
           ...new Set(
@@ -7286,6 +7306,10 @@ function ProfitCenter() {
         ),
       ].sort()
     : (isSL ? slData : spData)?.months || [];
+  const aM =
+    sY === curYM.y && !aM0.includes(curYM.m)
+      ? [...aM0, curYM.m].sort()
+      : aM0;
 
   useEffect(() => {
     setPage(0);
@@ -7293,27 +7317,9 @@ function ProfitCenter() {
     setRecipeEditKey(null);
   }, [lossOnly, dSearch, orderSort, sY, sM, platform, range]);
 
-  /* 首次載入資料時自動跳到最新月份（僅一次；手動切換年份會重設月份） */
-  const autoJumpedRef = useRef(false);
-  useEffect(() => {
-    if (autoJumpedRef.current) return;
-    const slVals = Object.values(slOrders);
-    const spVals = Object.values(spOrders);
-    const posVals = Object.values(posOrders);
-    if (!slVals.length && !spVals.length && !posVals.length) return;
-    const dates = [
-      ...slVals.map((o) => o.date),
-      ...spVals.map((o) => String(o.date)),
-      ...posVals.map((o) => String(o.date)),
-    ]
-      .filter(Boolean)
-      .sort()
-      .reverse();
-    if (!dates.length) return;
-    autoJumpedRef.current = true;
-    setSY(dates[0].substring(0, 4));
-    setSM(dates[0].substring(5, 7));
-  }, [slOrders, spOrders, posOrders]);
+  /* 2026-09-03 老闆定：載入不再自動跳到「資料裡的最新月份」，一律停在當月。
+     當月還沒匯報表就顯示空白＋「此期間沒有任何有效訂單」提示，等匯入。
+     （匯入報表後仍會跳到該批資料的最新月份，見三個 parser 結尾） */
 
   const slUsage = useMemo(() => buildUsage(slOrders), [slOrders]);
   const spUsage = useMemo(() => buildUsage(spOrders), [spOrders]);
@@ -10279,7 +10285,8 @@ function ProfitCenter() {
                             {fmtP(slD.returnRate)}
                           </Tag>
                         )}
-                        {missCost.n > 0 && (
+                        {/* 已鎖定的期間成本已凍結，不再提醒補成本（老闆 2026-09-03） */}
+                        {missCost.n > 0 && !isLocked && (
                           <Tag
                             v="warn"
                             style={{ cursor: "pointer" }}
@@ -10820,7 +10827,8 @@ function ProfitCenter() {
                         >
                           {spS.badge.label}
                         </Tag>
-                        {missCost.n > 0 && (
+                        {/* 已鎖定的期間成本已凍結，不再提醒補成本（老闆 2026-09-03） */}
+                        {missCost.n > 0 && !isLocked && (
                           <Tag
                             v="warn"
                             style={{ cursor: "pointer" }}
