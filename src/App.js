@@ -68,8 +68,7 @@ const FBC = {
   appId: "1:435446255525:web:7f1727440a507d7add224c",
 };
 const FSPC = { collection: "warrooms", docId: "unified_profit_center_v1" };
-const FSPC_SL = { collection: "warrooms", docId: "shopline_profit_center_v16" };
-const FSPC_SP = { collection: "warrooms", docId: "shopee_profit_center_v2" };
+/* 舊版單一 doc 的訂單來源：只給 runMigrationIfNeeded 與 forceLegacyRestore（救援用）讀 */
 const FSPC_SL_ORD = { collection: "warrooms", docId: "unified_sl_orders_v1" };
 const FSPC_SP_ORD = { collection: "warrooms", docId: "unified_sp_orders_v1" };
 
@@ -242,6 +241,13 @@ const numOrZero = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 const safeText = (v) => String(v ?? "").trim();
+/* 欄名比對：忽略所有空白字元。平台偶爾會把「退貨 / 退款狀態」改成「退貨/退款狀態」，
+   精確比對會靜默失效（整欄變 0／空字串）而且不會有任何警告 */
+const nzKey = (s) => safeText(s).replace(/\s+/g, "");
+const nzIndex = (hdrs, name) => {
+  const t = nzKey(name);
+  return (hdrs || []).findIndex((h) => nzKey(h) === t);
+};
 /* 日期正規化：容忍 2026/1/5、2026-1-5、含時間字串，一律轉成 YYYY-MM-DD */
 const normDate = (raw) => {
   const s = safeText(raw).split(" ")[0].split("T")[0].replace(/\//g, "-");
@@ -627,9 +633,24 @@ const Tag = ({ children, v = "default", style: st = {}, onClick }) => {
     warn: { bg: "var(--wn-dim)", c: "var(--wn)", bd: "var(--wn-bdr)" },
   };
   const s = vs[v] || vs.default;
+  /* 可點的 Tag（例如 Hero「未填成本 N」跳轉）要能用鍵盤到達，
+     與檔內其他可點非按鈕元素同一套：role/tabIndex/onKeyDown */
+  const clickable = typeof onClick === "function";
   return (
     <span
       onClick={onClick}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick(e);
+              }
+            }
+          : undefined
+      }
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -1020,6 +1041,56 @@ const posGmColor = (gm) =>
   gm >= 0.45 ? "var(--up)" : gm >= 0.35 ? "var(--wn)" : "var(--dn)";
 const posCovColor = (cov) =>
   cov >= 0.9 ? "var(--up)" : cov >= 0.6 ? "var(--wn)" : "var(--dn)";
+/* CSV 匯出共用工具（門市頁與官網／蝦皮共用同一份，避免兩份複製貼上各自漂移）。
+   公式注入防護：OWASP 觸發字元 = + - @ 與 tab/CR 開頭一律前綴單引號，
+   但純數字與百分比（含負的 -3.21%）是我們自己算出來的值，不能被加引號變成髒值。
+   換行判斷含 \r：備註裡的單獨 CR 沒加引號會把一列拆成兩列 */
+const csvEscape = (v0) => {
+  const v = String(v0 ?? "");
+  const safe = /^-?\d+(\.\d+)?%?$/.test(v);
+  const body = !safe && /^[=@+\-\t\r]/.test(v) ? "'" + v : v;
+  return /[",\r\n]/.test(body) ? `"${body.replace(/"/g, '""')}"` : body;
+};
+const downloadCsv = (rows, filename) => {
+  const csv = "﻿" + rows.map((r) => r.map(csvEscape).join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(
+    new Blob([csv], { type: "text/csv;charset=utf-8" })
+  );
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+/* 門市通路彙總：門市頁與總覽各自 reduce 一份會分岔（要加欄位容易只加一邊），
+   統一走這支；呼叫端自己挑要用的欄位 */
+const POS_CH_SUM_KEYS = [
+  "rev",
+  "cost",
+  "gp",
+  "net",
+  "op",
+  "tax",
+  "orders",
+  "noCostRev",
+  "noCostCount",
+  "estRev",
+  "estCost",
+  "estCount",
+  "invoiceRev",
+  "coveredRev",
+  "coveredGp",
+  "coveredNet",
+  "coveredOp",
+  "coveredTax",
+  "lossCount",
+];
+const sumPosChannels = (list) =>
+  (list || []).reduce((a, c) => {
+    POS_CH_SUM_KEYS.forEach((k) => {
+      a[k] = (a[k] || 0) + (Number(c?.[k]) || 0);
+    });
+    return a;
+  }, Object.fromEntries(POS_CH_SUM_KEYS.map((k) => [k, 0])));
 /* 交接檔陷阱③：單價≤1 且數量>100 ＝ 疑似開單時單價／數量顛倒（總價打進數量欄） */
 const posSwapSuspect = (items) =>
   (items || []).some((it) => (Number(it.price) || 0) <= 1 && (Number(it.qty) || 0) > 100);
@@ -1048,6 +1119,7 @@ function POSDashboard({
   sM,
   periodLabel,
   onToggleInvoice,
+  onExported,
 }) {
   const s = data.summary;
   const gapVal = s.netMargin - posTarget;
@@ -1090,26 +1162,7 @@ function POSDashboard({
   };
   const ctdL = { ...ctd, textAlign: "left", fontFamily: "inherit" };
   /* 通路合計（只算勾選中的通路，與 KPI 同口徑） */
-  const chTotal = data.channels
-    .filter((c) => !c.excluded)
-    .reduce(
-      (a, c) => ({
-        rev: a.rev + c.rev,
-        orders: a.orders + c.orders,
-        coveredRev: a.coveredRev + c.coveredRev,
-        coveredGp: a.coveredGp + c.coveredGp,
-        coveredNet: a.coveredNet + c.coveredNet,
-        invoiceRev: a.invoiceRev + c.invoiceRev,
-      }),
-      {
-        rev: 0,
-        orders: 0,
-        coveredRev: 0,
-        coveredGp: 0,
-        coveredNet: 0,
-        invoiceRev: 0,
-      }
-    );
+  const chTotal = sumPosChannels(data.channels.filter((c) => !c.excluded));
   /* 訂單表：搜尋／只看虧損／排序／分頁（與官網蝦皮同一套操作） */
   const filtered = data.orderList
     .filter((o) => !lossOnly || (!o.missCost && o.net < 0))
@@ -1145,6 +1198,16 @@ function POSDashboard({
   const paged = filtered.slice(curPage * pageSize, (curPage + 1) * pageSize);
   const lossAll = data.orderList.filter((o) => !o.missCost && o.net < 0).length;
   const noCostAll = data.orderList.filter((o) => o.missCost).length;
+  /* 顯示用參數：已鎖定月份的淨利是用快照參數算的，KPI 卡副標不能印側欄現值，
+     否則同一張 Hero 上面寫「快照 38.8%」下面寫「41.2%」 */
+  const snapOne =
+    isLocked && snapParams && !snapParams.mixed ? snapParams.list[0] : null;
+  const shownOp = snapOne ? snapOne.opExpense : opExpense;
+  const shownTax = snapOne ? snapOne.tax : taxRate;
+  const shownFpLabel =
+    isLocked && snapParams && snapParams.mixed
+      ? "各月快照 %（見側欄）"
+      : `營業費 ${shownOp}%・稅 ${shownTax}%`;
   const onSort = (k) =>
     setSort((p) => ({
       key: k,
@@ -1152,11 +1215,6 @@ function POSDashboard({
     }));
   /* 匯出 CSV：彙總（全期間）＋明細（套用目前篩選），與官網同格式與公式注入防護 */
   const exportCsv = () => {
-    const esc = (v0) => {
-      let v = String(v0 ?? "");
-      if (/^[=@+\-]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v)) v = "'" + v;
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    };
     const r0 = Math.round;
     const rows = [
       ["平台", "門市"],
@@ -1172,8 +1230,8 @@ function POSDashboard({
       ["最終淨利（成本齊全單）", r0(s.coveredNet)],
       ["毛利率", (s.grossMargin * 100).toFixed(2) + "%"],
       ["淨利率", (s.netMargin * 100).toFixed(2) + "%"],
-      ["成本覆蓋率", (s.costCoverage * 100).toFixed(1) + "%"],
-      ["開票比例", (s.invoiceRate * 100).toFixed(1) + "%"],
+      ["成本覆蓋率", (s.costCoverage * 100).toFixed(2) + "%"],
+      ["開票比例", (s.invoiceRate * 100).toFixed(2) + "%"],
       ["平均客單價", r0(s.aov)],
       [],
     ];
@@ -1222,12 +1280,8 @@ function POSDashboard({
           .join("；"),
       ])
     );
-    const csv = "﻿" + rows.map((r) => r.map(esc).join(",")).join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    a.download = `門市損益報表_${periodLabel}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadCsv(rows, `門市損益報表_${periodLabel}.csv`);
+    onExported?.();
   };
   return (
     <>
@@ -1269,10 +1323,11 @@ function POSDashboard({
             <Zap size={10} />{" "}
             {s.coveredRev > 0 ? (gapVal >= 0 ? "穩健" : "警告") : "無資料"}
           </Tag>
+          {/* 不 disable：三平台一致由 toggleSnap 用 toast 說明為什麼不能鎖，
+              disabled 按鈕無法聚焦，鍵盤／手機使用者會看不到任何原因 */}
           <Btn
             v={isLocked ? "danger" : "default"}
             onClick={onToggleSnap}
-            disabled={!canLock}
             title={canLock ? "" : "請先切到單一月份（各月營業費 % 不同）"}
           >
             <Lock size={11} /> {isLocked ? "解除快照" : "鎖定快照"}
@@ -1283,6 +1338,10 @@ function POSDashboard({
               {snapParams.mixed
                 ? "快照參數各月不同（見側欄）"
                 : `快照 營業費 ${snapParams.list[0].opExpense}%・稅 ${snapParams.list[0].tax}%`}
+            </Tag>
+          ) : snapParams ? (
+            <Tag v="default">
+              部分訂單帶快照（見側欄）・現值 營業費 {opExpense}%・稅 {taxRate}%
             </Tag>
           ) : (
             <Tag v="default">
@@ -1384,7 +1443,7 @@ function POSDashboard({
               {s.coveredRev > 0 ? fmtP(s.netMargin) : "—"}
             </div>
             <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 4 }}>
-              門市目標 {(posTarget * 100).toFixed(0)}%　差距{" "}
+              門市目標 {fmtP(posTarget)}　差距{" "}
               <span
                 style={{ color: gapVal >= 0 ? "var(--up)" : "var(--dn)" }}
               >
@@ -1514,7 +1573,7 @@ function POSDashboard({
         <PosKpi
           label="稅後淨利率"
           value={s.coveredRev > 0 ? fmtP(s.netMargin) : "—"}
-          sub={`淨利 ${fmt$(s.coveredNet)} ｜ 營業費 ${opExpense}%・稅 ${taxRate}%（開票 ${
+          sub={`淨利 ${fmt$(s.coveredNet)} ｜ ${shownFpLabel}（開票 ${
             s.rev > 0 ? fmtP(s.invoiceRate) : "—"
           } 才課）`}
           color={s.coveredRev > 0 ? netColor : "var(--t4)"}
@@ -1750,12 +1809,18 @@ function POSDashboard({
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <BarChart3 size={16} color="var(--t3)" />
             <span style={{ fontSize: 14, fontWeight: 700 }}>單筆訂單決策明細</span>
+            {/* 本表含未計入 KPI 的通路，數字會比 Hero 大——標明口徑，
+                否則同一頁兩個「虧損 N 筆」對不起來 */}
             <span style={{ fontSize: 11, color: "var(--dn)" }}>
-              虧損 {lossAll} 筆
+              {excludedKeys.length > 0
+                ? `本表虧損 ${lossAll} 筆（計入 KPI ${s.lossCount} 筆）`
+                : `虧損 ${lossAll} 筆`}
             </span>
             {noCostAll > 0 && (
               <span style={{ fontSize: 11, color: "var(--wn)" }}>
-                缺成本 {noCostAll} 筆
+                {excludedKeys.length > 0
+                  ? `本表缺成本 ${noCostAll} 筆（計入 KPI ${s.noCostCount} 筆）`
+                  : `缺成本 ${noCostAll} 筆`}
               </span>
             )}
             {excludedKeys.length > 0 && (
@@ -2190,32 +2255,9 @@ function OverviewDashboard({
   const posCh = useMemo(() => posData?.channelsAll || [], [posData]);
   const posS = useMemo(() => {
     if (!posData) return null;
-    const t = posCh.reduce(
-      (a, c) => ({
-        rev: a.rev + c.rev,
-        net: a.net + c.coveredNet,
-        coveredRev: a.coveredRev + c.coveredRev,
-        coveredGp: a.coveredGp + c.coveredGp,
-        op: a.op + c.op,
-        orders: a.orders + c.orders,
-        noCostRev: a.noCostRev + c.noCostRev,
-        noCostCount: a.noCostCount + c.noCostCount,
-        lossCount: a.lossCount + c.lossCount,
-        invoiceRev: a.invoiceRev + c.invoiceRev,
-      }),
-      {
-        rev: 0,
-        net: 0,
-        coveredRev: 0,
-        coveredGp: 0,
-        op: 0,
-        orders: 0,
-        noCostRev: 0,
-        noCostCount: 0,
-        lossCount: 0,
-        invoiceRev: 0,
-      }
-    );
+    const sum = sumPosChannels(posCh);
+    /* 總覽的 net 語意＝成本齊全單的淨利（門市頁叫 coveredNet），沿用舊欄位名 */
+    const t = { ...sum, net: sum.coveredNet };
     return {
       ...t,
       netMargin: t.coveredRev > 0 ? t.net / t.coveredRev : 0,
@@ -2332,9 +2374,9 @@ function OverviewDashboard({
         list.push({
           level: "warn",
           platform: "門市",
-          msg: `現場零售淨利率 ${fmtP(rm)} 低於門市目標 ${(posTarget * 100).toFixed(
-            0
-          )}%，差距 ${((posTarget - rm) * 100).toFixed(1)}%`,
+          msg: `現場零售淨利率 ${fmtP(rm)} 低於門市目標 ${fmtP(
+            posTarget
+          )}，差距 ${((posTarget - rm) * 100).toFixed(1)}%`,
         });
     }
     if (posS && posS.noCostCount > 0)
@@ -2343,9 +2385,9 @@ function OverviewDashboard({
         platform: "門市",
         msg: `${posS.noCostCount} 筆（${fmt$(
           posS.noCostRev
-        )}）算不出成本：品項未選正規或缺商品明細——這部分只計營收、不計淨利，成本覆蓋率 ${(
-          posS.coverage * 100
-        ).toFixed(0)}%`,
+        )}）算不出成本：品項未選正規或缺商品明細——這部分只計營收、不計淨利，成本覆蓋率 ${fmtP(
+          posS.coverage
+        )}`,
       });
     if (posS && posS.lossCount > 0)
       list.push({
@@ -3021,7 +3063,15 @@ function OverviewDashboard({
                       {
                         l: "淨利率",
                         v: fmtP(p.margin),
-                        c: p.margin >= p.target ? p.color : "var(--wn)",
+                        /* 三段色：達標＝平台色、未達標但仍賺＝黃、虧損＝紅。
+                           原本兩段色會讓虧損顯示成黃色，與同頁下方六通路表的
+                           posNetColor 自相矛盾 */
+                        c:
+                          p.margin >= p.target
+                            ? p.color
+                            : p.margin > 0
+                            ? "var(--wn)"
+                            : "var(--dn)",
                         sub:
                           p.margin >= p.target
                             ? `${p.targetLabel ? "高於" + p.targetLabel + " " : "超標 "}+${(
@@ -3388,7 +3438,7 @@ function OverviewDashboard({
           </div>
           <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 10, lineHeight: 1.6 }}>
             門市無平台抽成；毛利率／淨利率只算成本齊全的單；稅只課有開發票的單。淨利率綠＝達門市目標
-            {(posTarget * 100).toFixed(0)}%（六通路同一把尺）。
+            {fmtP(posTarget)}（六通路同一把尺）。
             {posCh.some((c) => c.orders === 0) &&
               "　灰色通路＝本期還沒有訂單（員工開單時選對應付款方式就會出現）。"}
           </div>
@@ -4131,19 +4181,17 @@ function MonthlyExpensePanel({
   );
 }
 
+/* 費率參數解析：快照有值用快照、否則用側欄現值。三個 OrderFin 共用同一條規則，
+   免得日後改快照語意只改到其中一個。回傳百分比數值（要小數自己 /100） */
+const fpPct = (ofp, fp, k) =>
+  (ofp?.[k] != null ? Number(ofp[k]) : parseFloat(fp?.[k])) || 0;
+
 /* ─── 單筆訂單損益計算（畫面與月度彙總共用，勿分岔） ─────────── */
 const slOrderFin = (order, fp, costsMap) => {
   const ofp = order.snapshotFeeParams;
-  const sfr =
-    ((ofp?.platformFeeRate != null
-      ? Number(ofp.platformFeeRate)
-      : parseFloat(fp.platformFeeRate)) || 0) / 100;
-  const oer =
-    ((ofp?.opExpense != null
-      ? Number(ofp.opExpense)
-      : parseFloat(fp.opExpense)) || 0) / 100;
-  const dtr =
-    ((ofp?.tax != null ? Number(ofp.tax) : parseFloat(fp.tax)) || 0) / 100;
+  const sfr = fpPct(ofp, fp, "platformFeeRate") / 100;
+  const oer = fpPct(ofp, fp, "opExpense") / 100;
+  const dtr = fpPct(ofp, fp, "tax") / 100;
   /* 金流／物流：查表命中才用表值；比不到不再無聲套預設——回傳 payKnown/dlvKnown 讓明細標 ⚠ */
   const prHit = slPayRate(order.paymentMethod);
   const payKnown = prHit !== null;
@@ -4184,12 +4232,8 @@ const spOrderFin = (order, fp, costsMap) => {
     !isCanc && (rf !== "" || (st.includes("退貨") && !st.includes("已完成")));
   const gross = numOrZero(order.grossPrice);
   const ofp = order.snapshotFeeParams;
-  const opEx =
-    ofp?.opExpense != null
-      ? Number(ofp.opExpense) || 0
-      : parseFloat(fp.opExpense) || 0;
-  const tx =
-    ofp?.tax != null ? Number(ofp.tax) || 0 : parseFloat(fp.tax) || 0;
+  const opEx = fpPct(ofp, fp, "opExpense");
+  const tx = fpPct(ofp, fp, "tax");
   let oCost = 0;
   (order.items || []).forEach((item) => {
     const ic =
@@ -4257,12 +4301,8 @@ const posOrderFin = (order, fp, costsMap, ratios) => {
   const isCanc = st.includes("取消") || st.includes("退款") || st.includes("已退");
   const gross = numOrZero(order.revenue);
   const ofp = order.snapshotFeeParams;
-  const opEx =
-    ofp?.opExpense != null
-      ? Number(ofp.opExpense) || 0
-      : parseFloat(fp.opExpense) || 0;
-  const tx =
-    ofp?.tax != null ? Number(ofp.tax) || 0 : parseFloat(fp.tax) || 0;
+  const opEx = fpPct(ofp, fp, "opExpense");
+  const tx = fpPct(ofp, fp, "tax");
   let oCost = 0;
   /* 估算成本金額（走成本率的部分）：讓畫面能誠實標示「這個數字含多少估的」 */
   let est = 0;
@@ -5134,6 +5174,10 @@ function ProfitCenter() {
      自己的 echo 內容相同→不重套；別台的變動內容不同→一定套用——不再被 50ms 視窗、
      兩台時鐘快慢、同批 meta 先到等條件擋掉（2026-09-03 盤查 M22–M25） */
   const lastMetaCore = useRef(null);
+  /* 訂單 state 是 immutable 更新：參照沒變＝內容沒變。存檔時先比參照，
+     省掉三平台 5,400 筆訂單重新 groupOrdersByMonth＋逐月 JSON.stringify
+     （只改一個淨利目標也會跑一次，主執行緒約 20–40ms） */
+  const lastSavedOrders = useRef({ sl: null, sp: null, pos: null });
   /* 首載閘門：meta＋三個月份集合的第一份快照都到齊才 cReady；之前不寫雲端、也不收匯入／改成本 */
   const firstLoads = useRef({ meta: false, sl: false, sp: false, pos: false });
   const meta = useRef({
@@ -5239,8 +5283,6 @@ function ProfitCenter() {
         db = getFirestore(app);
       cDoc.current = doc(db, FSPC.collection, FSPC.docId);
       fRef.current._db = db;
-      fRef.current._slDoc = doc(db, FSPC_SL.collection, FSPC_SL.docId);
-      fRef.current._spDoc = doc(db, FSPC_SP.collection, FSPC_SP.docId);
       fRef.current._slOrdDoc = doc(
         db,
         FSPC_SL_ORD.collection,
@@ -5605,10 +5647,6 @@ function ProfitCenter() {
           updatedBy: meta.current.clientId,
         });
 
-        const slByMonth = groupOrdersByMonth(slOrders);
-        const spByMonth = groupOrdersByMonth(spOrders);
-        const posByMonth = groupOrdersByMonth(posOrders);
-
         const writes = [];
         /* meta 只在內容真的變了才寫（去掉時間戳比對）——從雲端套回來的內容不會被自己再寫一次 */
         const core = metaCoreOf(metaPl);
@@ -5629,66 +5667,39 @@ function ProfitCenter() {
           );
         }
 
-        // 官網：只寫有變動的月份
-        Object.entries(slByMonth).forEach(([ym, orders]) => {
-          const json = JSON.stringify(orders);
-          if (prevSlMonthlyHashes.current[ym] === json) return;
-          prevSlMonthlyHashes.current[ym] = json;
-          writes.push(
-            setDoc(doc(db, SL_MONTHLY_COLL, ym), {
-              ordersJson: json,
-              count: Object.keys(orders).length,
-              updatedAtMs: ms,
-            })
-          );
-        });
-        // 官網：偵測已刪除的月份
-        Object.keys(prevSlMonthlyHashes.current).forEach((ym) => {
-          if (!slByMonth[ym]) {
-            delete prevSlMonthlyHashes.current[ym];
-            writes.push(deleteDoc(doc(db, SL_MONTHLY_COLL, ym)));
-          }
-        });
-
-        // 蝦皮：只寫有變動的月份
-        Object.entries(spByMonth).forEach(([ym, orders]) => {
-          const json = JSON.stringify(orders);
-          if (prevSpMonthlyHashes.current[ym] === json) return;
-          prevSpMonthlyHashes.current[ym] = json;
-          writes.push(
-            setDoc(doc(db, SP_MONTHLY_COLL, ym), {
-              ordersJson: json,
-              count: Object.keys(orders).length,
-              updatedAtMs: ms,
-            })
-          );
-        });
-        Object.keys(prevSpMonthlyHashes.current).forEach((ym) => {
-          if (!spByMonth[ym]) {
-            delete prevSpMonthlyHashes.current[ym];
-            writes.push(deleteDoc(doc(db, SP_MONTHLY_COLL, ym)));
-          }
-        });
-
-        // 門市：只寫有變動的月份
-        Object.entries(posByMonth).forEach(([ym, orders]) => {
-          const json = JSON.stringify(orders);
-          if (prevPosMonthlyHashes.current[ym] === json) return;
-          prevPosMonthlyHashes.current[ym] = json;
-          writes.push(
-            setDoc(doc(db, POS_MONTHLY_COLL, ym), {
-              ordersJson: json,
-              count: Object.keys(orders).length,
-              updatedAtMs: ms,
-            })
-          );
-        });
-        Object.keys(prevPosMonthlyHashes.current).forEach((ym) => {
-          if (!posByMonth[ym]) {
-            delete prevPosMonthlyHashes.current[ym];
-            writes.push(deleteDoc(doc(db, POS_MONTHLY_COLL, ym)));
-          }
-        });
+        /* 三平台共用：訂單參照沒變就整段跳過（不重算月份分組、不重新序列化） */
+        const pushMonthlyWrites = (orders, coll, hashesRef, refKey) => {
+          if (lastSavedOrders.current[refKey] === orders) return;
+          const byMonth = groupOrdersByMonth(orders);
+          Object.entries(byMonth).forEach(([ym, mo]) => {
+            const json = JSON.stringify(mo);
+            if (hashesRef.current[ym] === json) return;
+            hashesRef.current[ym] = json;
+            writes.push(
+              setDoc(doc(db, coll, ym), {
+                ordersJson: json,
+                count: Object.keys(mo).length,
+                updatedAtMs: ms,
+              })
+            );
+          });
+          /* 偵測已刪除的月份（重置本期／清空最後一筆） */
+          Object.keys(hashesRef.current).forEach((ym) => {
+            if (!byMonth[ym]) {
+              delete hashesRef.current[ym];
+              writes.push(deleteDoc(doc(db, coll, ym)));
+            }
+          });
+          lastSavedOrders.current[refKey] = orders;
+        };
+        pushMonthlyWrites(slOrders, SL_MONTHLY_COLL, prevSlMonthlyHashes, "sl");
+        pushMonthlyWrites(spOrders, SP_MONTHLY_COLL, prevSpMonthlyHashes, "sp");
+        pushMonthlyWrites(
+          posOrders,
+          POS_MONTHLY_COLL,
+          prevPosMonthlyHashes,
+          "pos"
+        );
 
         if (!writes.length) {
           setSync("synced");
@@ -5700,6 +5711,9 @@ function ProfitCenter() {
         setSync("synced");
       } catch (e) {
         console.error("[Save Error]", e);
+        /* 寫入失敗：清掉「已存過」記號與 meta 內容記號，下一次存檔才會完整重試 */
+        lastSavedOrders.current = { sl: null, sp: null, pos: null };
+        lastMetaCore.current = null;
         setSync("error");
       }
     }, 900);
@@ -5724,6 +5738,18 @@ function ProfitCenter() {
     cReady,
   ]);
 
+  /* 匯入時的缺欄警告：平台改欄名時，缺席的金額欄會被靜默當 0，
+     報表照樣說「已匯入 N 筆」。這支把缺席的關鍵欄一次講清楚 */
+  const warnMissingCols = (pairs, hdrs) => {
+    const miss = pairs.filter(([, i]) => i === undefined || i === -1).map(([n]) => n);
+    if (!miss.length) return;
+    console.warn("[匯入] 缺少關鍵欄位", miss, "實際檔頭：", hdrs);
+    toast(
+      `⚠ 這份報表缺少關鍵欄位：${miss.join("、")}——相關金額會以 0 計算，數字會失真。請確認匯出時有勾這些欄位`,
+      { type: "warning", duration: 12000 }
+    );
+  };
+
   /* ─── Shopline CSV/XLSX Parser ─────────────────────────────── */
   const processSLParsed = (parsed) => {
     if (!Array.isArray(parsed) || parsed.length < 2) {
@@ -5731,7 +5757,7 @@ function ProfitCenter() {
       return;
     }
     const hdrs = parsed[0].map((h) => safeText(h).replace(/^\uFEFF/, ""));
-    const idx = (n) => hdrs.indexOf(n);
+    const idx = (n) => nzIndex(hdrs, n);
     const idxF = (a, b) => {
       const i = idx(a);
       return i !== -1 ? i : idx(b);
@@ -5790,9 +5816,18 @@ function ProfitCenter() {
       );
       return;
     }
+    /* 金額關鍵欄缺席只會靜默當 0（營收 0、成本照扣＝整批顯示虧損），必須講出來 */
+    warnMissingCols(
+      [
+        ["訂單狀態", im.status],
+        ["付款總金額／訂單合計", im.paidTotal > -1 ? im.paidTotal : im.total],
+        ["商品結帳價／商品原價", im.unitPrice],
+        ["數量", im.qty],
+      ],
+      hdrs
+    );
 
     const newOrders = {};
-    let count = 0;
 
     for (let i = 1; i < parsed.length; i++) {
       const row = parsed[i];
@@ -5849,14 +5884,18 @@ function ProfitCenter() {
           items: [],
           _orderIds: [rawOrderId],
         };
-        count++;
       } else if (!newOrders[groupKey]._orderIds.includes(rawOrderId)) {
-        // 同一購物車內的另一張訂單：金額累加，避免只取第一張造成漏算
+        // 同一購物車內的另一張訂單：金額累加，避免只取第一張造成漏算。
+        // 但這張自己是取消／刪除就不累加金額——否則整組會「非全對即全錯」
+        // （狀態／免稅／退貨旗標仍只取第一張，至少讓金額是對的）
         newOrders[groupKey]._orderIds.push(rawOrderId);
-        newOrders[groupKey].revenue += rowRevenue();
-        newOrders[groupKey].voucherAmount += rowVoucher();
-        newOrders[groupKey].shippingIncome += rowShipping();
-        newOrders[groupKey].refunded += rowRefunded();
+        const rowStatus = im.status > -1 ? safeText(row[im.status]) : "";
+        if (!rowStatus.includes("取消") && !rowStatus.includes("刪除")) {
+          newOrders[groupKey].revenue += rowRevenue();
+          newOrders[groupKey].voucherAmount += rowVoucher();
+          newOrders[groupKey].shippingIncome += rowShipping();
+          newOrders[groupKey].refunded += rowRefunded();
+        }
       }
 
       const prodName =
@@ -5988,7 +6027,11 @@ function ProfitCenter() {
         ? `；⚠ ${unkPay.size} 種付款方式比不到費率表（${[...unkPay].join("、")}），暫套 2.2%`
         : "");
     toast(
-      `已匯入 ${count} 筆官網訂單` +
+      /* count 是購物車數；訂單數＝各購物車的 _orderIds 總和（多半相等，同購物車拆單時才差） */
+      `已匯入 ${Object.values(newOrders).reduce(
+        (a, o) => a + (o._orderIds?.length || 1),
+        0
+      )} 筆官網訂單` +
         (partialKept > 0
           ? `（${partialKept} 筆購物車部分重匯，已保留原合併紀錄——如需更正請重匯含完整購物車的報表）`
           : "") +
@@ -6007,7 +6050,7 @@ function ProfitCenter() {
       return;
     }
     const hdrs = parsed[0].map((h) => safeText(h).replace(/^\uFEFF/, ""));
-    const idx = (n) => hdrs.indexOf(n);
+    const idx = (n) => nzIndex(hdrs, n);
     const idxF = (a, b) => {
       const i = idx(a);
       return i !== -1 ? i : idx(b);
@@ -6056,6 +6099,16 @@ function ProfitCenter() {
       });
       return;
     }
+    /* 金額關鍵欄缺席＝算出來的錢一定錯（手續費少扣＝淨利虛高、退款狀態讀不到＝
+       退款單全算營收），但程式只會靜默當 0。只警告這幾欄，避免警報疲勞 */
+    warnMissingCols([
+      ["訂單狀態", im.status],
+      ["退貨 / 退款狀態", im.refundStatus],
+      ["商品總價", im.grossPrice],
+      ["成交手續費", im.txFee],
+      ["金流與系統處理費", im.paymentFee],
+      ["數量", im.qty],
+    ], hdrs);
 
     const newOrders = {};
     let count = 0;
@@ -6245,7 +6298,12 @@ function ProfitCenter() {
         continue;
       }
       rec.payMethod = safeText(r[tIdx.payMethod]) || rec.payMethod;
-      rec.date = normDate(safeText(r[tIdx.txDate])) || rec.date;
+      /* normDate 對空字串會回 1970-01-01（truthy），舊寫法 `|| rec.date` 是死碼：
+         交易日期空白時會把已對到的日期蓋成 1970。空白就保留前一列的日期。
+         註：rec.total 用「覆蓋」是對的——交易明細的「訂單合計」每一列都是整單總額，
+         改成累加會讓預訂＋結清的單營收翻倍（2026-09-03 用 7 份真實檔驗過） */
+      const txDateRaw = safeText(r[tIdx.txDate]);
+      if (txDateRaw) rec.date = normDate(txDateRaw);
       rec.remark = safeText(r[tIdx.remark]) || rec.remark;
       rec.staff =
         (tIdx.staff !== undefined ? safeText(r[tIdx.staff]) : "") || rec.staff;
@@ -6808,14 +6866,14 @@ function ProfitCenter() {
   const slData = useMemo(() => {
     const all = Object.values(slOrders);
     if (!all.length) return null;
-    const years = [...new Set(all.map((o) => o.date.substring(0, 4)))]
+    const years = [...new Set(all.map((o) => String(o.date || "").substring(0, 4)))]
       .sort()
       .reverse();
     const months = [
       ...new Set(
         all
-          .filter((o) => sY === "All" || o.date.startsWith(sY))
-          .map((o) => o.date.substring(5, 7))
+          .filter((o) => sY === "All" || String(o.date || "").startsWith(sY))
+          .map((o) => String(o.date || "").substring(5, 7))
       ),
     ].sort();
     const tnr = (parseFloat(slFp.targetNet) || 15) / 100;
@@ -6858,7 +6916,8 @@ function ProfitCenter() {
     };
     const fl = all.filter((o) => {
       if (!inPeriod(o.date)) return false;
-      const cx = o.status.includes("取消") || o.status.includes("刪除");
+      const st = String(o.status || "");
+      const cx = st.includes("取消") || st.includes("刪除");
       t.rawTotal += o.revenue;
       /* 全額退款（已退款金額 ≥ 營收）視同取消；部分退款在下面以淨額入帳（與門市規則同口徑） */
       const refunded = Number(o.refunded) || 0;
@@ -6943,7 +7002,7 @@ function ProfitCenter() {
           currentOrderContribution: cm,
         };
       })
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
     const tnm = t.rev > 0 ? t.net / t.rev : 0;
     return {
       years,
@@ -7165,6 +7224,13 @@ function ProfitCenter() {
     return map;
   }, [slMonthly, spMonthly, posMonthlyAll]);
 
+  /* 總覽用的三平台月表：包成穩定參照，否則 OverviewDashboard 的 alerts/posCompareNote
+     useMemo 每次重渲染都失效，會把三平台全部訂單重掃一遍 */
+  const monthlyByPlatform = useMemo(
+    () => ({ sl: slMonthly, sp: spMonthly, pos: posMonthlyAll }),
+    [slMonthly, spMonthly, posMonthlyAll]
+  );
+
   /* ─── Derived state ────────────────────────────────────────── */
   const isOverview = platform === "overview";
   const isSL = platform === "shopline";
@@ -7198,8 +7264,8 @@ function ProfitCenter() {
           ...new Set(
             [
               ...Object.values(slOrders)
-                .filter((o) => o.date.startsWith(sY))
-                .map((o) => o.date.substring(5, 7)),
+                .filter((o) => String(o.date).startsWith(sY))
+                .map((o) => String(o.date).substring(5, 7)),
               ...Object.values(spOrders)
                 .filter((o) => String(o.date).startsWith(sY))
                 .map((o) => String(o.date).substring(5, 7)),
@@ -7253,7 +7319,10 @@ function ProfitCenter() {
   const spUsage = useMemo(() => buildUsage(spOrders), [spOrders]);
   const posUsage = useMemo(() => buildUsage(posOrders), [posOrders]);
 
-  const matrixList = useMemo(() => {
+  /* 未過濾的完整商品清單（本期有賣的＋孤兒條目）。
+     「未填成本 N」必須從這裡算，不能從畫面篩選後的 matrixList 算——
+     否則在成本表打字搜尋就會讓 Hero 的未填提醒整個消失 */
+  const matrixAll = useMemo(() => {
     const source =
       (isPOS
         ? posData?.matrixList
@@ -7301,11 +7370,26 @@ function ProfitCenter() {
         stale: !last || (staleDays !== null && staleDays >= 180),
       };
     });
+    return withUsage;
+  }, [
+    isSL,
+    isPOS,
+    slData,
+    spData,
+    posData,
+    costs,
+    recipes,
+    slUsage,
+    spUsage,
+    posUsage,
+  ]);
+
+  const matrixList = useMemo(() => {
     const gmOf = (p) =>
       p.totalRevenue > 0
         ? (p.totalRevenue - p.totalCost) / p.totalRevenue
         : -Infinity;
-    return withUsage
+    return matrixAll
       .filter((p) => !cleanupOnly || p.stale)
       .filter((p) => !soldOnly || (p.soldQty || 0) > 0)
       .filter(
@@ -7334,23 +7418,7 @@ function ProfitCenter() {
           );
         return 0;
       });
-  }, [
-    isSL,
-    isPOS,
-    slData,
-    spData,
-    posData,
-    dMSearch,
-    costSort,
-    costsEff,
-    costs,
-    recipes,
-    slUsage,
-    spUsage,
-    posUsage,
-    cleanupOnly,
-    soldOnly,
-  ]);
+  }, [matrixAll, dMSearch, costSort, costsEff, cleanupOnly, soldOnly]);
 
   /* 一鍵清理：刪除目前清單（久未使用過濾後）的手填成本與配方，可復原 */
   const bulkCleanStale = () => {
@@ -7386,8 +7454,24 @@ function ProfitCenter() {
         toast(`已清除 ${keys.length} 項成本/配方`, {
           type: "info",
           action: () => {
-            setCosts((p) => ({ ...p, ...removedCosts }));
-            setRecipes((p) => ({ ...p, ...removedRecipes }));
+            /* 只補回目前不存在的鍵：使用者在這 10 秒內重填的成本不能被舊值蓋掉 */
+            let skipped = 0;
+            const restore = (setter, removed) =>
+              setter((p) => {
+                const n = { ...p };
+                Object.entries(removed).forEach(([k, v]) => {
+                  if (n[k] === undefined) n[k] = v;
+                  else skipped++;
+                });
+                return n;
+              });
+            restore(setCosts, removedCosts);
+            restore(setRecipes, removedRecipes);
+            if (skipped > 0)
+              toast(`已復原，但略過 ${skipped} 項（清除後已重新填過，保留新值）`, {
+                type: "warning",
+                duration: 8000,
+              });
           },
           actionLabel: "復原",
         });
@@ -7396,18 +7480,21 @@ function ProfitCenter() {
   };
 
   const missCost = useMemo(() => {
-    const miss = matrixList.filter((p) => {
+    /* 口徑＝本期真的有賣的商品（不含孤兒條目），且不受成本表的搜尋／篩選影響。
+       以前用 matrixList 算，在搜尋框打字就會讓 Hero 的未填提醒整個消失 */
+    const sold = matrixAll.filter((p) => (p.soldQty || 0) > 0);
+    const miss = sold.filter((p) => {
       /* 門市掛了成本率的泛稱鍵＝有估算成本，不算未填 */
       if (isPOS && Number(posRatios[p.key]) > 0) return false;
       const v = costsEff[p.key];
       return v === undefined || v === null || v === "" || Number(v) === 0;
     });
     return {
-      total: matrixList.length,
+      total: sold.length,
       n: miss.length,
       keys: new Set(miss.map((p) => p.key)),
     };
-  }, [matrixList, costsEff, isPOS, posRatios]);
+  }, [matrixAll, costsEff, isPOS, posRatios]);
 
   const filteredOrders = useMemo(() => {
     if (!currentData) return [];
@@ -7662,20 +7749,113 @@ function ProfitCenter() {
     r.onload = (ev) => {
       try {
         const parsed = JSON.parse(ev.target.result);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-          throw new Error("not-an-object");
+        const isPlainObj = (v) =>
+          v && typeof v === "object" && !Array.isArray(v);
+        if (!isPlainObj(parsed)) throw new Error("not-an-object");
+        /* 版本守門：未來的 __v:3 用舊版工具還原會把 __v/platform/costs 當成商品鍵寫進成本表 */
+        if (parsed.__v !== undefined && parsed.__v !== 2) {
+          toast(
+            `這份備份是 v${parsed.__v} 格式，這個版本的工具讀不懂，已中止（請用產生它的版本還原）`,
+            { type: "error", duration: 9000 }
+          );
+          return;
+        }
+        const pfTag = isPOS ? "pos" : isSL ? "sl" : "sp";
+        const pfName = (t) =>
+          t === "pos" ? "門市" : t === "sl" ? "官網" : "蝦皮";
         if (parsed.__v === 2) {
-          if (parsed.costs) setCosts((p) => ({ ...p, ...parsed.costs }));
-          if (parsed.recipes) setRecipes((p) => ({ ...p, ...parsed.recipes }));
-          if (parsed.components)
-            setComponents((p) => ({ ...p, ...parsed.components }));
-          if (isPOS && parsed.ratios)
-            setPosRatios((p) => ({ ...p, ...parsed.ratios }));
-          toast("成本＋配方＋原料庫還原成功", { type: "success" });
+          /* 形狀檢查：壞檔會產生垃圾成本鍵，或讓 compGroups 對 null 取屬性直接炸掉整頁 */
+          const costsIn = isPlainObj(parsed.costs) ? parsed.costs : {};
+          const recipesIn = isPlainObj(parsed.recipes) ? parsed.recipes : {};
+          const compsIn = isPlainObj(parsed.components) ? parsed.components : {};
+          const ratiosIn = isPlainObj(parsed.ratios) ? parsed.ratios : {};
+          const comps = Object.fromEntries(
+            Object.entries(compsIn).filter(
+              ([, v]) => isPlainObj(v) && typeof v.name === "string"
+            )
+          );
+          const recs = Object.fromEntries(
+            Object.entries(recipesIn).filter(
+              ([, v]) =>
+                Array.isArray(v) && v.every((l) => isPlainObj(l) && l.compId)
+            )
+          );
+          /* 組件是三平台共用：還原舊備份會讓另外兩個平台的配方成本一起變動 */
+          const compChanged = Object.entries(comps).filter(
+            ([id, v]) =>
+              components[id] && Number(components[id].price) !== Number(v.price)
+          ).length;
+          const doRestore = () => {
+            const prev = {
+              costs: { ...costs },
+              recipes: { ...recipes },
+              components: { ...components },
+              ratios: { ...posRatios },
+            };
+            setCosts((p) => ({ ...p, ...costsIn }));
+            setRecipes((p) => ({ ...p, ...recs }));
+            setComponents((p) => ({ ...p, ...comps }));
+            if (isPOS) setPosRatios((p) => ({ ...p, ...ratiosIn }));
+            toast("成本＋配方＋原料庫還原成功", {
+              type: "success",
+              action: () => {
+                setCosts(prev.costs);
+                setRecipes(prev.recipes);
+                setComponents(prev.components);
+                if (isPOS) setPosRatios(prev.ratios);
+                toast("已還原到匯入前的狀態", { type: "info" });
+              },
+              actionLabel: "復原",
+              duration: 12000,
+            });
+          };
+          setConfirmBox({
+            title: "還原成本備份",
+            message:
+              (parsed.platform && parsed.platform !== pfTag
+                ? `⚠ 這是「${pfName(parsed.platform)}」的備份，但目前在「${pfName(
+                    pfTag
+                  )}」頁——還原會把別平台的商品鍵灌進這裡。\n\n`
+                : "") +
+              `將覆蓋：手填成本 ${Object.keys(costsIn).length} 項、配方 ${
+                Object.keys(recs).length
+              } 項、原料庫 ${Object.keys(comps).length} 項${
+                isPOS ? `、成本率 ${Object.keys(ratiosIn).length} 項` : ""
+              }。\n${
+                compChanged > 0
+                  ? `其中 ${compChanged} 個組件單價會變動——原料庫是三平台共用，官網／蝦皮／門市所有掛到這些組件的配方成本會一起改變。\n`
+                  : ""
+              }\n匯入後 12 秒內可在右下角通知按「復原」。`,
+            danger: parsed.platform && parsed.platform !== pfTag,
+            onOk: doRestore,
+          });
         } else {
-          /* 舊版備份＝純成本表 */
-          setCosts((p) => ({ ...p, ...parsed }));
-          toast("成本資料匯入成功", { type: "success" });
+          /* 舊版備份＝純成本表：值必須全是數字，否則是誤選的無關 JSON */
+          const vals = Object.values(parsed);
+          if (!vals.length || !vals.every((v) => Number.isFinite(Number(v)))) {
+            toast(
+              "這份 JSON 不像成本備份（內容不是「商品鍵→數字」），已中止",
+              { type: "error", duration: 9000 }
+            );
+            return;
+          }
+          setConfirmBox({
+            title: "還原舊版成本表",
+            message: `將覆蓋目前「${pfName(pfTag)}」的手填成本 ${
+              vals.length
+            } 項（舊版備份不含配方與原料庫）。`,
+            danger: false,
+            onOk: () => {
+              const prev = { ...costs };
+              setCosts((p) => ({ ...p, ...parsed }));
+              toast("成本資料匯入成功", {
+                type: "success",
+                action: () => setCosts(prev),
+                actionLabel: "復原",
+                duration: 12000,
+              });
+            },
+          });
         }
       } catch {
         toast("匯入失敗：請選擇本工具「備份」產生的 JSON 檔", {
@@ -7689,10 +7869,12 @@ function ProfitCenter() {
   /* ─── 原料庫與配方操作 ────────────────────────────────────── */
   const compUsage = useMemo(() => {
     const u = {};
+    /* 算「幾個配方用到」而不是「幾行用到」：同一配方重複加同一組件會有兩行，
+       刪除警告若照行數會高報（「被 2 個配方使用中」但其實只有 1 個） */
     [slRecipes, spRecipes, posRecipes].forEach((rs) =>
       Object.values(rs || {}).forEach((lines) =>
-        (lines || []).forEach((l) => {
-          u[l.compId] = (u[l.compId] || 0) + 1;
+        new Set((lines || []).map((l) => l.compId)).forEach((id) => {
+          u[id] = (u[id] || 0) + 1;
         })
       )
     );
@@ -7823,12 +8005,6 @@ function ProfitCenter() {
         : effM === "All"
         ? `${sY}年`
         : `${sY}-${effM}`;
-    const esc = (s) => {
-      let v = String(s ?? "");
-      /* 公式注入防護：以 =/@/+/- 開頭的非數字內容前綴單引號中和 */
-      if (/^[=@+\-]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v)) v = "'" + v;
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    };
     const r0 = Math.round;
     const rows = [];
     /* 明細列跟畫面同步套用「虧損篩選／搜尋」；彙總列維持全期間口徑並明確標註 */
@@ -7934,13 +8110,7 @@ function ProfitCenter() {
       );
     }
     if (!rows.length) return;
-    const csv = "\uFEFF" + rows.map((r) => r.map(esc).join(",")).join("\r\n");
-    const b = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(b);
-    a.download = `${isSL ? "官網" : "蝦皮"}損益報表_${pl}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadCsv(rows, `${isSL ? "官網" : "蝦皮"}損益報表_${pl}.csv`);
     toast("報表已匯出", { type: "success" });
   };
 
@@ -8005,8 +8175,10 @@ function ProfitCenter() {
 
   /* ── 未填成本跳轉 helper ── */
   const jumpToFirstMissCost = () => {
-    /* 先清空商品搜尋，避免缺成本項目被篩掉導致跳轉落空（延遲需大於搜尋 debounce） */
+    /* 先清空所有篩選，避免缺成本項目被篩掉導致跳轉落空（延遲需大於搜尋 debounce） */
     setMSearch("");
+    setSoldOnly(false);
+    setCleanupOnly(false);
     setTimeout(() => {
       if (firstMissRef.current) {
         firstMissRef.current.scrollIntoView({
@@ -8285,7 +8457,7 @@ function ProfitCenter() {
                         商品成本資料庫
                       </span>
                       <span style={{ fontSize: 11, color: "var(--t3)" }}>
-                        共 {missCost.total} 項
+                        顯示 {matrixList.length} 項
                       </span>
                     </div>
                     <div
@@ -8989,9 +9161,7 @@ function ProfitCenter() {
                                           : "var(--t1)",
                                     }}
                                   >
-                                    {gmVal === null
-                                      ? "—"
-                                      : `${(gmVal * 100).toFixed(1)}%`}
+                                    {gmVal === null ? "—" : fmtP(gmVal)}
                                   </td>
                                   <td style={{ ...td2, textAlign: "right" }}>
                                     <div
@@ -9139,9 +9309,12 @@ function ProfitCenter() {
                                             }`,
                                             danger: true,
                                             onOk: () => {
-                                              const n = { ...costs };
-                                              delete n[p.key];
-                                              setCosts(n);
+                                              /* functional update：確認框開著期間若有遠端同步／復原改動，不要用過期閉包蓋回去 */
+                                              setCosts((prev) => {
+                                                const n = { ...prev };
+                                                delete n[p.key];
+                                                return n;
+                                              });
                                             },
                                           })
                                         }
@@ -9913,7 +10086,24 @@ function ProfitCenter() {
                         setExpandedId(null);
                         toast(`已清除 ${toDelete.length} 筆訂單`, {
                           type: "info",
-                          action: () => setter((p) => ({ ...p, ...removed })),
+                          action: () => {
+                            /* 只補回目前不存在的訂單：這 10 秒內重新匯入的新版本
+                               不能被舊版本蓋回去（確認文案本來就叫人可以重匯） */
+                            let skipped = 0;
+                            setter((p) => {
+                              const n = { ...p };
+                              Object.entries(removed).forEach(([k, v]) => {
+                                if (n[k] === undefined) n[k] = v;
+                                else skipped++;
+                              });
+                              return n;
+                            });
+                            if (skipped > 0)
+                              toast(
+                                `已復原，但略過 ${skipped} 筆（清除後已重新匯入，保留新版本）`,
+                                { type: "warning", duration: 8000 }
+                              );
+                          },
                           actionLabel: "復原",
                         });
                       },
@@ -9938,6 +10128,8 @@ function ProfitCenter() {
               minWidth: 0,
             }}
           >
+            {/* 主內容區單獨包一層邊界：切換平台時 key 變動＝自動重置錯誤狀態 */}
+            <ErrorBoundary inner key={platform}>
             {isOverview ? (
               <OverviewDashboard
                 slData={slData}
@@ -9950,7 +10142,7 @@ function ProfitCenter() {
                 slCosts={slEffCosts}
                 spCosts={spEffCosts}
                 allMonthly={allMonthly}
-                monthlyByPlatform={{ sl: slMonthly, sp: spMonthly, pos: posMonthlyAll }}
+                monthlyByPlatform={monthlyByPlatform}
                 theme={theme}
                 sY={sY}
                 sM={effM}
@@ -10010,6 +10202,7 @@ function ProfitCenter() {
                   sY={sY}
                   sM={effM}
                   onToggleInvoice={togglePosInvoice}
+                  onExported={() => toast("報表已匯出", { type: "success" })}
                   periodLabel={
                     sY === "Custom"
                       ? `${range.from || "起"}~${range.to || "迄"}`
@@ -10957,7 +11150,7 @@ function ProfitCenter() {
                           l: "真實抽成率",
                           v: fmtP(spS.feeRate),
                           c: "var(--blue)",
-                          note: "蝦皮固定抽成費率",
+                          note: "結算檔實際手續費＋蝦幣回饋 ÷ 營收（實測值，非固定費率）",
                         },
                         {
                           l: "優惠券發放率",
@@ -11666,6 +11859,7 @@ function ProfitCenter() {
                 </div>
               </>
             )}
+            </ErrorBoundary>
           </main>
         </div>
       </div>
@@ -11870,6 +12064,45 @@ class ErrorBoundary extends React.Component {
   }
   render() {
     if (this.state.err) {
+      /* inner＝只包主內容區：側欄（匯入／重置本期／備份）保持可用，
+         使用者才有自救路徑，不會被一筆壞資料鎖死整頁 */
+      if (this.props.inner) {
+        return (
+          <div
+            style={{
+              border: "1px solid #E4B8B8",
+              background: "rgba(200,64,64,0.05)",
+              borderRadius: 12,
+              padding: 20,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              color: "var(--t1)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 800 }}>
+              ⚠️ 這個平台的畫面算不出來
+            </div>
+            <div style={{ fontSize: 12, color: "var(--t3)", lineHeight: 1.7 }}>
+              資料仍在雲端與本機，沒有遺失。多半是某一筆訂單的欄位壞掉。
+              可以到左側「重置本期」清掉這一期再重新匯入報表，或先切到別的平台。
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--t4)",
+                fontFamily: "monospace",
+                wordBreak: "break-all",
+              }}
+            >
+              {String(this.state.err?.message || this.state.err)}
+            </div>
+            <div>
+              <Btn onClick={() => this.setState({ err: null })}>重試</Btn>
+            </div>
+          </div>
+        );
+      }
       return (
         <div
           style={{
