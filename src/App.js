@@ -2283,6 +2283,12 @@ function OverviewDashboard({
       coverage: t.rev > 0 ? (t.rev - t.noCostRev) / t.rev : 0,
     };
   }, [posData, posCh]);
+  /* 六通路表的小條：改用「佔全公司」後數字會很小（十幾 %），
+     條長改成相對最大通路，視覺才看得出差距；精確比例看旁邊那欄 */
+  const posChMax = useMemo(
+    () => Math.max(0, ...posCh.map((c) => Number(c.rev) || 0)),
+    [posCh]
+  );
 
   const hasAny = slD || spS || posS;
   /* 合計＝全公司（官網＋蝦皮＋門市六通路）；但呈現上門市不包成一包：
@@ -3332,7 +3338,10 @@ function OverviewDashboard({
                   {[
                     ["通路", "left"],
                     ["營收", "right"],
-                    ["佔門市", "right"],
+                    /* 佔比改用全公司當分母（老闆 2026-09-03：「佔門市」怪怪的）——
+                       六通路只是都走 POS 記帳，不是一個事業體；Omnichat 佔門市 45%
+                       這種數字會誤導。總覽本來就把它們當各自獨立的通路看 */
+                    ["佔全公司", "right"],
                     ["筆數", "right"],
                     ["客單", "right"],
                     ["毛利率", "right"],
@@ -3361,7 +3370,7 @@ function OverviewDashboard({
                   const empty = c.orders === 0;
                   const gm = c.coveredRev > 0 ? c.coveredGp / c.coveredRev : null;
                   const nm = c.coveredRev > 0 ? c.coveredNet / c.coveredRev : null;
-                  const share = posS.rev > 0 ? c.rev / posS.rev : 0;
+                  const share = totalRev > 0 ? c.rev / totalRev : 0;
                   const cellR = {
                     padding: "9px 10px",
                     fontSize: 12,
@@ -3400,7 +3409,7 @@ function OverviewDashboard({
                             </span>
                           )}
                         </div>
-                        {/* 營收佔比小條 */}
+                        {/* 營收比較條：長度相對最大通路，不是絕對佔比 */}
                         <div
                           style={{
                             height: 4,
@@ -3413,7 +3422,9 @@ function OverviewDashboard({
                         >
                           <div
                             style={{
-                              width: `${share * 100}%`,
+                              width: `${
+                                posChMax > 0 ? (c.rev / posChMax) * 100 : 0
+                              }%`,
                               height: "100%",
                               background: posC,
                               opacity: 0.85,
