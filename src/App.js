@@ -189,7 +189,9 @@ const slPayRate = (pay) => {
 };
 
 /* KPI 2026-08-25 老闆拍板（用儀表板現行口徑計價）：官網 15、蝦皮 10、門市統一 12、
-   總覽固定目標 12（綠 ≥12／黃 10–12 安全帶／紅 <10）。營業費為老闆自調值勿改。 */
+   總覽固定目標 12（綠 ≥12／黃 10–12 成長油門帶／紅 <10）。營業費為老闆自調值勿改。
+   2026-09-03 補述：10% 是地板不是目標，10–12 那 2 個百分點（≈84 萬/年）刻意留給
+   加碼投放；煞車＝邊際 ROAS <3、或淨利真的碰到 10%。9 月起執行。 */
 const DEFAULT_FP_SL = {
   platformFeeRate: "1.0",
   opExpense: "30.0",
@@ -1047,6 +1049,13 @@ const posGmColor = (gm) =>
   gm >= 0.45 ? "var(--up)" : gm >= 0.35 ? "var(--wn)" : "var(--dn)";
 const posCovColor = (cov) =>
   cov >= 0.9 ? "var(--up)" : cov >= 0.6 ? "var(--wn)" : "var(--dn)";
+/* 營業費率分級（總覽大磚與三平台卡共用）：0 在目標內／1 FY2026 可接受帶／
+   2 活動月加碼帶／3 需檢討。先四捨五入到顯示精度（百分比兩位）再比，
+   否則 35.00% 會因浮點誤差 0.35000000000000003 被判成超標 */
+const opexBandOf = (r) => {
+  const v = Math.round((Number(r) || 0) * 10000) / 10000;
+  return v <= 0.3 ? 0 : v <= 0.33 ? 1 : v <= 0.35 ? 2 : 3;
+};
 /* CSV 匯出共用工具（門市頁與官網／蝦皮共用同一份，避免兩份複製貼上各自漂移）。
    公式注入防護：OWASP 觸發字元 = + - @ 與 tab/CR 開頭一律前綴單引號，
    但純數字與百分比（含負的 -3.21%）是我們自己算出來的值，不能被加引號變成髒值。
@@ -2281,7 +2290,7 @@ function OverviewDashboard({
   const totalRev = (slD?.rev || 0) + (spS?.tG || 0) + (posS?.rev || 0);
   const totalNet = (slD?.net || 0) + (spS?.afterComm || 0) + (posS?.net || 0);
   const totalNetMargin = totalRev > 0 ? totalNet / totalRev : 0;
-  /* 總覽固定目標 12%、安全帶 10–12、紅線 10（2026-08-25 老闆拍板；加權線提案已否決） */
+  /* 總覽固定目標 12%、成長油門帶 10–12、紅線 10（2026-08-25 老闆拍板；加權線提案已否決） */
   const OVERALL_TARGET = 0.12;
   const OVERALL_RED = 0.1;
   /* 範圍內平均營業費率：營收加權（各訂單已依所屬月份快照 % 計算），
@@ -2631,12 +2640,14 @@ function OverviewDashboard({
     );
   }
 
-  /* 綠＝達目標 12；黃＝安全帶 10–12；紅＝跌破 10 */
+  /* 綠＝達目標 12；黃＝成長油門帶 10–12；紅＝跌破 10。
+     10–12 這段不是警戒是刻意留的空間：2 個百分點 ≈ 84 萬/年，用來加碼投放
+     （老闆 2026-09-03 拍板，9 月起執行；淨利 10% 是地板不是目標） */
   const overallStatus =
     totalNetMargin >= OVERALL_TARGET
       ? { label: "整體健康", c: "var(--up)" }
       : totalNetMargin >= OVERALL_RED
-      ? { label: "安全帶內", c: "var(--wn)" }
+      ? { label: "成長油門帶", c: "var(--wn)" }
       : totalNetMargin > 0
       ? { label: "跌破紅線 10%", c: "var(--dn)" }
       : { label: "整體虧損", c: "var(--dn)" };
@@ -2818,13 +2829,16 @@ function OverviewDashboard({
                   fontWeight: 700,
                   fontFamily: mono,
                   lineHeight: 1,
-                  /* OPEX 框架：目標 30%、總帳上限 32%（⇔全公司稅後 17%）；愈低愈好 */
+                  /* OPEX 治理線（老闆自己的 SOP）：年度預算目標 30%、FY2026 可接受帶 33%
+                     （員旅 80 萬＋年終 1 個月＝營收 2.9%，硬 30% 今年數學上不可達）、
+                     活動月安全上限 35%（中秋、年節這種要加碼投放的月份）、>35% 才需檢討。
+                     注意：費用低不等於好——營收沒成長時的低費用是警訊不是成績 */
                   color:
                     totalRev === 0
                       ? "var(--t2)"
-                      : totalOpexRate <= 0.3
+                      : opexBandOf(totalOpexRate) === 0
                       ? "var(--up)"
-                      : totalOpexRate <= 0.32
+                      : opexBandOf(totalOpexRate) <= 2
                       ? "var(--wn)"
                       : "var(--dn)",
                 }}
@@ -2838,18 +2852,21 @@ function OverviewDashboard({
                     fontWeight: 600,
                     marginTop: 6,
                     color:
-                      totalOpexRate <= 0.3
+                      opexBandOf(totalOpexRate) === 0
                         ? "var(--up)"
-                        : totalOpexRate <= 0.32
+                        : opexBandOf(totalOpexRate) <= 2
                         ? "var(--wn)"
                         : "var(--dn)",
                   }}
                 >
-                  {totalOpexRate <= 0.3
-                    ? "✓ 在 OPEX 目標 30% 內"
-                    : totalOpexRate <= 0.32
-                    ? "⚠ 超過目標 30%，仍在總帳上限 32% 內"
-                    : "⚠ 超過總帳上限 32%，全公司稅後 17% 難達成"}
+                  {
+                    [
+                      "✓ 在 OPEX 目標 30% 內（年度預算線）",
+                      "⚠ 高於目標 30%，仍在 FY2026 可接受帶 33% 內",
+                      "⚠ 33–35%：活動月加碼可接受，淡月要收回來",
+                      "⚠ 超過活動月上限 35%，需檢討",
+                    ][opexBandOf(totalOpexRate)]
+                  }
                 </div>
               )}
               <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 2 }}>
@@ -3096,12 +3113,13 @@ function OverviewDashboard({
                       {
                         l: "營業費率（快照加權）",
                         v: fmtP(p.opexRate),
+                        /* 門檻與總覽同一組：30 目標／33 可接受帶／35 活動月上限 */
                         c:
                           p.rev === 0
                             ? "var(--t2)"
-                            : p.opexRate <= 0.3
+                            : opexBandOf(p.opexRate) === 0
                             ? p.color
-                            : p.opexRate <= 0.32
+                            : opexBandOf(p.opexRate) <= 2
                             ? "var(--wn)"
                             : "var(--dn)",
                       },
