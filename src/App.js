@@ -1178,8 +1178,14 @@ function POSDashboard({
   const ctdL = { ...ctd, textAlign: "left", fontFamily: "inherit" };
   /* 通路合計（只算勾選中的通路，與 KPI 同口徑） */
   const chTotal = sumPosChannels(data.channels.filter((c) => !c.excluded));
-  /* 訂單表：搜尋／只看虧損／排序／分頁（與官網蝦皮同一套操作） */
-  const filtered = data.orderList
+  /* 訂單表：跟著上方「通路分組」的勾選走（老闆 2026-09-03：勾哪個通路就只看那個
+     通路的訂單）。以前是全通路都列、未計入的灰掉，但那樣表頭的虧損／缺成本筆數
+     會跟 Hero 對不起來，逐筆看某個通路也要自己用眼睛挑 */
+  const visibleOrders = data.orderList.filter((o) =>
+    included.includes(o.channel)
+  );
+  /* 搜尋／只看虧損／排序／分頁（與官網蝦皮同一套操作） */
+  const filtered = visibleOrders
     .filter((o) => !lossOnly || (!o.missCost && o.net < 0))
     .filter((o) => {
       if (!dq) return true;
@@ -1211,8 +1217,9 @@ function POSDashboard({
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const curPage = Math.min(page, totalPages - 1);
   const paged = filtered.slice(curPage * pageSize, (curPage + 1) * pageSize);
-  const lossAll = data.orderList.filter((o) => !o.missCost && o.net < 0).length;
-  const noCostAll = data.orderList.filter((o) => o.missCost).length;
+  /* 表頭筆數與表身同口徑（都只算勾選中的通路），才不會兩個數字對不起來 */
+  const lossAll = visibleOrders.filter((o) => !o.missCost && o.net < 0).length;
+  const noCostAll = visibleOrders.filter((o) => o.missCost).length;
   /* 顯示用參數：已鎖定月份的淨利是用快照參數算的，KPI 卡副標不能印側欄現值，
      否則同一張 Hero 上面寫「快照 38.8%」下面寫「41.2%」 */
   const snapOne =
@@ -1826,23 +1833,20 @@ function POSDashboard({
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <BarChart3 size={16} color="var(--t3)" />
             <span style={{ fontSize: 14, fontWeight: 700 }}>單筆訂單決策明細</span>
-            {/* 本表含未計入 KPI 的通路，數字會比 Hero 大——標明口徑，
-                否則同一頁兩個「虧損 N 筆」對不起來 */}
+            {/* 表身已跟著勾選過濾，筆數與 Hero 同口徑，不用再標「本表」 */}
             <span style={{ fontSize: 11, color: "var(--dn)" }}>
-              {excludedKeys.length > 0
-                ? `本表虧損 ${lossAll} 筆（計入 KPI ${s.lossCount} 筆）`
-                : `虧損 ${lossAll} 筆`}
+              虧損 {lossAll} 筆
             </span>
             {noCostAll > 0 && (
               <span style={{ fontSize: 11, color: "var(--wn)" }}>
-                {excludedKeys.length > 0
-                  ? `本表缺成本 ${noCostAll} 筆（計入 KPI ${s.noCostCount} 筆）`
-                  : `缺成本 ${noCostAll} 筆`}
+                缺成本 {noCostAll} 筆
               </span>
             )}
             {excludedKeys.length > 0 && (
               <span style={{ fontSize: 10, color: "var(--t4)" }}>
-                （含未計入 KPI 的通路，灰色顯示）
+                {/* 用「本期有單且已勾選」的通路數，與上方「計入 …」標籤同一個口徑；
+                    勾了但本期沒單的通路不算，否則數字對不上使用者看到的東西 */}
+                （只顯示 {scopeLabel || "—"}，要看其他通路請在上方勾起來）
               </span>
             )}
           </div>
@@ -1972,8 +1976,9 @@ function POSDashboard({
                             setOpenId(isOpen ? null : o.orderId);
                           }
                         }}
+                        /* 表身已跟著勾選過濾，不會再出現未計入通路的列，
+                           灰掉的樣式留著當保險（例如重匯後通路 key 對不上時） */
                         style={{ cursor: "pointer", opacity: o.excludedCh ? 0.5 : 1 }}
-                        title={o.excludedCh ? "此通路未勾選計入 KPI（通路拆解可勾回）" : undefined}
                       >
                         <td style={{ ...td2 }}>
                           <div
