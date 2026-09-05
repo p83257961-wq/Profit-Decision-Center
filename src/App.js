@@ -2318,8 +2318,16 @@ function OverviewDashboard({
   const posRetail = posCh.find((c) => c.key === "retail") || null;
   const posOthers = posCh.filter((c) => c.key !== "retail");
   const chNet = (c) => (c && c.coveredRev > 0 ? c.coveredNet / c.coveredRev : 0);
-  /* 通路色：門市零售＝紫；其他五通路用同色系不同深淺（圖例會標名字，不靠顏色辨認） */
-  const otherAlpha = [0.7, 0.55, 0.42, 0.3, 0.2];
+  /* 通路色：門市零售＝紫；其他五通路各自一色（老闆 2026-09-05 要「分開列出來分色」）。
+     五色用 dataviz 驗色工具做 OKLCH 搜尋挑出：照圓餅相鄰序（紫→經銷→電話→Omnichat→合作
+     →企業→官網綠）在淺／深兩模式相鄰色弱 ΔE≥8、正常視力 ≥15 全過；避開狀態紅／琥珀與
+     三平台色相；金＋橄欖綠在色弱模擬下同色（ΔE 2.6）故只留金。最接近的一對是 Omnichat 藍
+     vs 企業天藍（非相鄰），靠圖例名字補；深色唯一不及格是官網綠 #2ECC71 自己的亮度帶
+     （app 既有 --up，不動）。顏色跟著實體走：進度條、圓餅、圖例、下方五通路卡片同一張表 */
+  const posChColor = isDark
+    ? { dealer: "#AF8E2A", phone: "#3CA694", omnichat: "#4693F1", partner: "#DD628E", corp: "#1AA1C9" }
+    : { dealer: "#967600", phone: "#289785", omnichat: "#1467C2", partner: "#AD3665", corp: "#089AC3" };
+  const chColor = (c) => posChColor[c.key] || posC;
 
   const periodLabel =
     sY === "Custom"
@@ -2668,28 +2676,24 @@ function OverviewDashboard({
       ? { label: "跌破紅線 10%", c: "var(--dn)" }
       : { label: "整體虧損", c: "var(--dn)" };
 
-  /* 全通路營收圓餅（老闆 2026-09-05 要的）：四片＝官網／蝦皮／門市現場零售／門市其他。
-     門市其他五個小通路合成一片灰——它們原本的「同一紫色五階透明度」拿去當五種類別，
-     用 dataviz 驗色工具跑是硬性不及格（相鄰 ΔE 約 5，正常視力也分不出），三平台色
-     全過。灰＝去強調的「其他」槽；五個通路各自的 % 在右邊圖例與 hover 都看得到。
-     直接標籤只給 ≥4% 的片，其餘靠圖例；片與片之間留 2px 底色縫 */
+  /* 全通路營收圓餅（老闆 2026-09-05 要的）：八片＝官網／蝦皮／門市現場零售＋門市其他五通路
+     各自一片一色（09-05 第二版，原本合成一片灰的「門市其他」拆開）。片序＝進度條與圖例序，
+     色由 posChColor 統一。直接標籤只給 ≥4% 的片，其餘靠圖例；片與片之間留 2px 底色縫 */
   const pieShort = {
     官網: "官網",
     蝦皮: "蝦皮",
     "門市（現場零售）": "門市",
-    門市其他: "門市其他",
+    "經銷·老客價": "經銷",
+    電話訂購: "電話",
+    Omnichat: "Omni",
+    合作通路: "合作",
+    企業採購: "企業",
   };
   const pieData = [
     { l: "官網", c: greenC, op: 1, v: slD?.rev || 0 },
     { l: "蝦皮", c: spC, op: 0.85, v: spS?.tG || 0 },
     { l: "門市（現場零售）", c: posC, op: 0.9, v: posRetail?.rev || 0 },
-    {
-      l: "門市其他",
-      c: "var(--t4)",
-      op: 1,
-      v: posOthers.reduce((s, c) => s + (c.rev || 0), 0),
-      sub: posOthers.map((c) => ({ l: c.label, v: c.rev || 0 })),
-    },
+    ...posOthers.map((c) => ({ l: c.label, c: chColor(c), op: 1, v: c.rev || 0 })),
   ].filter((d) => d.v > 0);
   const RAD = Math.PI / 180;
   const renderPieLabel = ({ cx, cy, midAngle, outerRadius, percent, name }) => {
@@ -2934,6 +2938,118 @@ function OverviewDashboard({
                 依各月快照％營收加權（含廣告）
               </div>
             </div>
+            {/* 全通路營收圓餅：放 Hero 列右側空位（老闆 2026-09-05 指定）。寬 320 是給外側
+                直接標籤留位（最長「門市 38.2%」），環在正中；視窗窄時自動換行到下一列 */}
+            {pieData.length > 0 && (
+              <div
+                style={{
+                  position: "relative",
+                  width: 320,
+                  height: 180,
+                  flex: "0 0 auto",
+                  marginLeft: "auto",
+                  alignSelf: "center",
+                }}
+                role="img"
+                aria-label={`全通路營收佔比：${pieData
+                  .map((d) => `${d.l} ${((d.v / totalRev) * 100).toFixed(1)}%`)
+                  .join("、")}`}
+              >
+                <RPieChart width={320} height={180}>
+                  <Pie
+                    data={pieData}
+                    dataKey="v"
+                    nameKey="l"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={74}
+                    paddingAngle={1.5}
+                    stroke="var(--s1)"
+                    strokeWidth={2}
+                    isAnimationActive={false}
+                    labelLine={false}
+                    label={renderPieLabel}
+                  >
+                    {pieData.map((d) => (
+                      <Cell key={d.l} fill={d.c} fillOpacity={d.op} />
+                    ))}
+                  </Pie>
+                  <RTooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null;
+                      const d = payload[0].payload;
+                      return (
+                        <div
+                          style={{
+                            background: "var(--s1)",
+                            border: "1px solid var(--s3)",
+                            borderRadius: 10,
+                            padding: "10px 14px",
+                            boxShadow: "0 4px 20px rgba(0,0,0,0.12)",
+                            minWidth: 170,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 14,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "var(--t1)",
+                            }}
+                          >
+                            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <span
+                                style={{
+                                  width: 8,
+                                  height: 8,
+                                  borderRadius: 2,
+                                  background: d.c,
+                                  opacity: d.op,
+                                  flex: "0 0 auto",
+                                }}
+                              />
+                              {d.l}
+                            </span>
+                            <span style={{ fontFamily: mono }}>
+                              {fmt$(d.v)} ·{" "}
+                              {totalRev > 0 ? `${((d.v / totalRev) * 100).toFixed(1)}%` : "—"}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+                </RPieChart>
+                {/* 環中心：合計營收 */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 160 - 46,
+                    top: 90 - 16,
+                    width: 92,
+                    textAlign: "center",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <div style={{ fontSize: 9, color: "var(--t4)", fontWeight: 700 }}>合計</div>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      fontFamily: mono,
+                      color: "var(--t1)",
+                      letterSpacing: "-0.02em",
+                    }}
+                  >
+                    {fmt$(totalRev)}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ marginBottom: 24 }}>
@@ -2970,159 +3086,35 @@ function OverviewDashboard({
                   transition: "width .6s",
                 }}
               />
-              {posOthers.map((c, i) => (
+              {posOthers.map((c) => (
                 <div
                   key={c.key}
                   style={{
                     width: `${totalRev > 0 ? (c.rev / totalRev) * 100 : 0}%`,
-                    background: posC,
-                    opacity: otherAlpha[i] ?? 0.2,
+                    background: chColor(c),
                     borderLeft: c.rev > 0 ? "1px solid var(--s1)" : "none",
                     transition: "width .6s",
                   }}
                 />
               ))}
             </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                flexWrap: "wrap",
-              }}
-            >
-            {/* 圓餅：寬度給 320 是為了讓外側標籤（最長「門市其他 38.2%」）有地方放，環本身在正中 */}
-            {pieData.length > 0 && (
-              <div
-                style={{ position: "relative", width: 320, height: 180, flex: "0 0 auto" }}
-                role="img"
-                aria-label={`全通路營收佔比：${pieData
-                  .map((d) => `${d.l} ${((d.v / totalRev) * 100).toFixed(1)}%`)
-                  .join("、")}`}
-              >
-                <RPieChart width={320} height={180}>
-                  <Pie
-                    data={pieData}
-                    dataKey="v"
-                    nameKey="l"
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={50}
-                    outerRadius={74}
-                    paddingAngle={1.5}
-                    stroke="var(--s1)"
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                    labelLine={false}
-                    label={renderPieLabel}
-                  >
-                    {pieData.map((d) => (
-                      <Cell key={d.l} fill={d.c} fillOpacity={d.op} />
-                    ))}
-                  </Pie>
-                  <RTooltip
-                    content={({ active, payload }) => {
-                      if (!active || !payload?.length) return null;
-                      const d = payload[0].payload;
-                      const pct = (v) =>
-                        totalRev > 0 ? `${((v / totalRev) * 100).toFixed(1)}%` : "—";
-                      return (
-                        <div
-                          style={{
-                            background: "var(--s1)",
-                            border: "1px solid var(--s3)",
-                            borderRadius: 10,
-                            padding: "10px 14px",
-                            boxShadow: "0 4px 20px rgba(0,0,0,0.12)",
-                            minWidth: 170,
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              gap: 14,
-                              fontSize: 12,
-                              fontWeight: 700,
-                              color: "var(--t1)",
-                            }}
-                          >
-                            <span>{d.l}</span>
-                            <span style={{ fontFamily: mono }}>
-                              {fmt$(d.v)} · {pct(d.v)}
-                            </span>
-                          </div>
-                          {d.sub && (
-                            <div style={{ marginTop: 6, borderTop: "1px solid var(--s3)", paddingTop: 6 }}>
-                              {d.sub.map((s) => (
-                                <div
-                                  key={s.l}
-                                  style={{
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    gap: 14,
-                                    fontSize: 11,
-                                    color: s.v > 0 ? "var(--t2)" : "var(--t4)",
-                                    lineHeight: 1.7,
-                                  }}
-                                >
-                                  <span>{s.l}</span>
-                                  <span style={{ fontFamily: mono }}>
-                                    {s.v > 0 ? `${fmt$(s.v)} · ${pct(s.v)}` : "—"}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }}
-                  />
-                </RPieChart>
-                {/* 環中心：合計營收 */}
-                <div
-                  style={{
-                    position: "absolute",
-                    left: 160 - 46,
-                    top: 90 - 16,
-                    width: 92,
-                    textAlign: "center",
-                    pointerEvents: "none",
-                  }}
-                >
-                  <div style={{ fontSize: 9, color: "var(--t4)", fontWeight: 700 }}>合計</div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 700,
-                      fontFamily: mono,
-                      color: "var(--t1)",
-                      letterSpacing: "-0.02em",
-                    }}
-                  >
-                    {fmt$(totalRev)}
-                  </div>
-                </div>
-              </div>
-            )}
-            {/* 圖例：官網／蝦皮／門市（現場零售）／電話／Omnichat／經銷／合作／企業 ＝ 8 項全列，沒營收也列 */}
+            {/* 圖例：官網／蝦皮／門市（現場零售）／經銷／電話／Omnichat／合作／企業 ＝ 8 項全列，
+                沒營收也列；色＝圓餅、進度條同一張表 */}
             <div
               style={{
                 display: "flex",
                 flexWrap: "wrap",
                 gap: "6px 14px",
-                flex: "1 1 260px",
-                minWidth: 0,
               }}
             >
               {[
                 { l: "官網", c: greenC, op: 1, v: slD?.rev || 0 },
                 { l: "蝦皮", c: spC, op: 0.85, v: spS?.tG || 0 },
                 { l: "門市（現場零售）", c: posC, op: 0.9, v: posRetail?.rev || 0 },
-                ...posOthers.map((c, i) => ({
+                ...posOthers.map((c) => ({
                   l: c.label,
-                  c: posC,
-                  op: otherAlpha[i] ?? 0.2,
+                  c: chColor(c),
+                  op: 1,
                   v: c.rev,
                 })),
               ].map((p) => {
@@ -3157,7 +3149,6 @@ function OverviewDashboard({
                   </div>
                 );
               })}
-            </div>
             </div>
           </div>
 
@@ -3378,8 +3369,7 @@ function OverviewDashboard({
                   gap: 6,
                 }}
               >
-                <div style={{ width: 8, height: 8, borderRadius: 2, background: posC, opacity: 0.55 }} />
-                門市其他通路（不計入「門市」，各自獨立）
+                門市其他通路（不計入「門市」，各自獨立；卡片左邊色條＝該通路在圓餅／圖例的顏色）
               </div>
               <div
                 style={{
@@ -3399,8 +3389,7 @@ function OverviewDashboard({
                         borderRadius: 8,
                         padding: "10px 12px",
                         opacity: empty ? 0.55 : 1,
-                        borderLeft: `3px solid ${posC}`,
-                        borderLeftColor: posC,
+                        borderLeft: `3px solid ${chColor(c)}`,
                       }}
                     >
                       <div
