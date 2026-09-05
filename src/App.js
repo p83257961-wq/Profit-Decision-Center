@@ -599,6 +599,7 @@ const SyncDot = ({ status, last }) => {
     idle: { l: "離線", c: "var(--t3)" },
     connecting: { l: "連線中", c: "var(--wn)" },
     synced: { l: "已同步", c: "var(--up)" },
+    pending: { l: "待同步", c: "var(--wn)" },
     saving: { l: "儲存中", c: "var(--orange)" },
     error: { l: "失敗", c: "var(--dn)" },
   };
@@ -5212,6 +5213,9 @@ function ProfitCenter() {
   const prevPosMonthlyHashes = useRef({});
   const migrating = useRef(false);
   const sTimer = useRef(null);
+  /* 寫入失敗的自動重試：saveTick 變動會重新觸發存檔 effect；saveRetry 限次數 */
+  const [saveTick, setSaveTick] = useState(0);
+  const saveRetry = useRef(0);
   /* 同步改用「內容比對」而非時間戳：lastMetaCore＝最後一次套用／寫入的 meta 內容
      （去掉 updatedAtMs/updatedBy、鍵序無關），月份文件用 prevXMonthlyHashes 的 ordersJson 比對。
      自己的 echo 內容相同→不重套；別台的變動內容不同→一定套用——不再被 50ms 視窗、
@@ -5544,7 +5548,10 @@ function ProfitCenter() {
         try {
           const metaData = parseMeta(snap);
           const core = metaCoreOf(metaData);
-          if (metaData && core !== lastMetaCore.current) {
+          /* 自己還沒被 server 確認的寫入（hasPendingWrites）不套用：lastMetaCore 改成
+             「寫成功才推進」之後，這裡不擋會把自己 in-flight 的內容當成別台的改動重套 */
+          const own = !!snap.metadata?.hasPendingWrites;
+          if (metaData && !own && core !== lastMetaCore.current) {
             lastMetaCore.current = core;
             if (metaData.slFp) setSlFp({ ...DEFAULT_FP_SL, ...metaData.slFp });
             if (metaData.spFp) setSpFp({ ...DEFAULT_FP_SP, ...metaData.spFp });
@@ -5564,7 +5571,9 @@ function ProfitCenter() {
           }
           await runMigrationIfNeeded(snap);
           markFirst("meta");
-          setSync("synced");
+          /* 只把「連線中」轉成已同步；待同步／儲存中／失敗由存檔路徑自己管，
+             別台的快照到了不代表自己的寫入成功了 */
+          setSync((s) => (s === "connecting" ? "synced" : s));
         } catch (e) {
           console.error("[Meta Snapshot Error]", e);
           markFirst("meta");
@@ -5595,17 +5604,21 @@ function ProfitCenter() {
           try {
             const prev = hashesRef.current;
             const next = {};
-            let changed = false;
             snapshot.forEach((docSnap) => {
-              const json = docSnap.data()?.ordersJson || "";
-              next[docSnap.id] = json;
-              if (prev[docSnap.id] !== json) changed = true;
+              /* 自己 in-flight 的寫入（還沒被 server 確認）：當作雲端沒變，
+                 等 ack 到了 hash 也推進了，自然對得上 */
+              if (docSnap.metadata?.hasPendingWrites) {
+                if (prev[docSnap.id] !== undefined) next[docSnap.id] = prev[docSnap.id];
+                return;
+              }
+              next[docSnap.id] = docSnap.data()?.ordersJson || "";
             });
-            /* 遠端刪掉整個月份（重置本期）：prev 有、next 沒有＝也算變動 */
-            Object.keys(prev).forEach((id) => {
-              if (!(id in next)) changed = true;
-            });
-            if (first || changed) {
+            const changed =
+              Object.keys(next).some((ym) => prev[ym] !== next[ym]) ||
+              Object.keys(prev).some((ym) => !(ym in next));
+            if (first) {
+              /* 首載：雲端為準、整份取代——本機 localStorage 可能是別台改過之前的舊版，
+                 不能拿來蓋雲端（2026-09-03 M26） */
               const all = {};
               Object.values(next).forEach((json) => {
                 if (!json) return;
@@ -5615,6 +5628,64 @@ function ProfitCenter() {
               });
               hashesRef.current = next;
               setter(all);
+              setLastSyncAt(Date.now());
+            } else if (changed) {
+              /* 之後的快照：逐月合併，不整包取代。本機在 900ms 防抖內還沒寫出去的改動
+                 （匯入／鎖定／發票覆寫／重置）不能被別台的快照沖掉（2026-09-04 delta 審查 3/3）。
+                 判「本機這個月有沒有改」＝本機該月 json 是否還等於上次同步點的 hash */
+              setter((local) => {
+                const localBy = groupOrdersByMonth(local);
+                const merged = {};
+                const newHash = {};
+                let conflicts = 0;
+                new Set([...Object.keys(next), ...Object.keys(localBy)]).forEach((ym) => {
+                  const cloudJson = next[ym];
+                  const oldHash = prev[ym];
+                  const localMo = localBy[ym] || null;
+                  const localJson = localMo ? JSON.stringify(localMo) : undefined;
+                  const localDirty = localJson !== oldHash;
+                  if (cloudJson === undefined) {
+                    /* 雲端沒這個月（別台重置）：本機沒改→跟著刪；本機有改→留著，之後會寫上去 */
+                    if (localDirty && localMo) {
+                      Object.assign(merged, localMo);
+                      if (oldHash !== undefined) newHash[ym] = oldHash;
+                    }
+                    return;
+                  }
+                  if (cloudJson === oldHash) {
+                    /* 雲端沒變：保留本機（可能有待寫的改動） */
+                    if (localMo) Object.assign(merged, localMo);
+                    newHash[ym] = cloudJson;
+                    return;
+                  }
+                  let cloudMo = {};
+                  try {
+                    cloudMo = JSON.parse(cloudJson);
+                  } catch {}
+                  if (!localDirty || localJson === cloudJson) {
+                    /* 雲端變了、本機沒改（或改成一模一樣＝自己的 ack 先到）：吃雲端 */
+                    Object.assign(merged, cloudMo);
+                    newHash[ym] = cloudJson;
+                    return;
+                  }
+                  /* 兩邊都變且不同：訂單級合併，本機改過的訂單優先；
+                     hash 停在舊值 → 下次存檔會把合併結果寫出去 */
+                  conflicts++;
+                  Object.assign(merged, cloudMo, localMo);
+                  if (oldHash !== undefined) newHash[ym] = oldHash;
+                });
+                hashesRef.current = newHash;
+                if (conflicts)
+                  setTimeout(
+                    () =>
+                      toast(
+                        `另一台剛改過${label}的 ${conflicts} 個月份，已與本機未存檔的改動合併`,
+                        { type: "warning", duration: 8000 }
+                      ),
+                    0
+                  );
+                return merged;
+              });
               setLastSyncAt(Date.now());
             }
           } catch (e) {
@@ -5668,7 +5739,12 @@ function ProfitCenter() {
     if (!aReady || !cReady || !cDoc.current) return;
     if (migrating.current) return;
     clearTimeout(sTimer.current);
+    /* 有待寫改動時燈先轉「待同步」，關分頁會被 beforeunload 攔下；
+       timer 跑完發現沒東西要寫會回 synced（遠端套用造成的 900ms 閃爍可接受） */
+    setSync((s) => (s === "synced" ? "pending" : s));
     sTimer.current = setTimeout(async () => {
+      sTimer.current = null;
+      const onSuccess = [];
       try {
         const ms = Date.now();
         const db = fRef.current._db;
@@ -5692,9 +5768,11 @@ function ProfitCenter() {
 
         const writes = [];
         /* meta 只在內容真的變了才寫（去掉時間戳比對）——從雲端套回來的內容不會被自己再寫一次 */
+        /* hash／lastMetaCore／lastSavedOrders 一律「寫成功才推進」——寫入被 server 拒絕時
+           記號留在舊值，下一輪存檔會自然重寫；以前在 await 之前就推進，失敗後永遠不重試
+           且燈會變綠（2026-09-04 delta 審查 3/3） */
         const core = metaCoreOf(metaPl);
         if (core !== lastMetaCore.current) {
-          lastMetaCore.current = core;
           writes.push(
             setDoc(
               cDoc.current,
@@ -5706,7 +5784,9 @@ function ProfitCenter() {
                 updatedAtServer: serverTimestamp(),
               },
               { merge: true }
-            )
+            ).then(() => {
+              lastMetaCore.current = core;
+            })
           );
         }
 
@@ -5717,23 +5797,30 @@ function ProfitCenter() {
           Object.entries(byMonth).forEach(([ym, mo]) => {
             const json = JSON.stringify(mo);
             if (hashesRef.current[ym] === json) return;
-            hashesRef.current[ym] = json;
             writes.push(
               setDoc(doc(db, coll, ym), {
                 ordersJson: json,
                 count: Object.keys(mo).length,
                 updatedAtMs: ms,
+              }).then(() => {
+                hashesRef.current[ym] = json;
               })
             );
           });
           /* 偵測已刪除的月份（重置本期／清空最後一筆） */
           Object.keys(hashesRef.current).forEach((ym) => {
             if (!byMonth[ym]) {
-              delete hashesRef.current[ym];
-              writes.push(deleteDoc(doc(db, coll, ym)));
+              writes.push(
+                deleteDoc(doc(db, coll, ym)).then(() => {
+                  delete hashesRef.current[ym];
+                })
+              );
             }
           });
-          lastSavedOrders.current[refKey] = orders;
+          /* 這個平台全部寫成功才記「已存過這個參照」 */
+          onSuccess.push(() => {
+            lastSavedOrders.current[refKey] = orders;
+          });
         };
         pushMonthlyWrites(slOrders, SL_MONTHLY_COLL, prevSlMonthlyHashes, "sl");
         pushMonthlyWrites(spOrders, SP_MONTHLY_COLL, prevSpMonthlyHashes, "sp");
@@ -5745,23 +5832,33 @@ function ProfitCenter() {
         );
 
         if (!writes.length) {
+          onSuccess.forEach((f) => f());
           setSync("synced");
           return;
         }
         setSync("saving");
         await Promise.all(writes);
+        onSuccess.forEach((f) => f());
+        saveRetry.current = 0;
         setLastSyncAt(Date.now());
         setSync("synced");
       } catch (e) {
         console.error("[Save Error]", e);
-        /* 寫入失敗：清掉「已存過」記號與 meta 內容記號，下一次存檔才會完整重試 */
-        lastSavedOrders.current = { sl: null, sp: null, pos: null };
-        lastMetaCore.current = null;
+        /* 記號都沒推進，下一輪存檔會自然重寫。這裡只負責亮紅燈＋排一次自動重試
+           （最多兩次；再失敗就等使用者下一個動作再觸發） */
         setSync("error");
+        if (saveRetry.current < 2) {
+          saveRetry.current += 1;
+          setTimeout(() => setSaveTick((t) => t + 1), 5000);
+        }
       }
     }, 900);
-    return () => clearTimeout(sTimer.current);
+    return () => {
+      clearTimeout(sTimer.current);
+      sTimer.current = null;
+    };
   }, [
+    saveTick,
     slFp,
     spFp,
     slCosts,
@@ -5780,6 +5877,24 @@ function ProfitCenter() {
     aReady,
     cReady,
   ]);
+
+  /* 還有沒寫出去的改動（timer 待跑／儲存中／失敗）時關分頁要攔：以前 900ms 內
+     關掉分頁＝雲端沒收到、重開又被首載快照蓋回去，燈卻一直顯示已同步 */
+  const syncRef = useRef(sync);
+  useEffect(() => {
+    syncRef.current = sync;
+  }, [sync]);
+  useEffect(() => {
+    const h = (e) => {
+      const s = syncRef.current;
+      if (sTimer.current || s === "pending" || s === "saving" || s === "error") {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, []);
 
   /* 匯入時的缺欄警告：平台改欄名時，缺席的金額欄會被靜默當 0，
      報表照樣說「已匯入 N 筆」。這支把缺席的關鍵欄一次講清楚 */
@@ -6929,11 +7044,13 @@ function ProfitCenter() {
     const tnr = (parseFloat(slFp.targetNet) || 15) / 100;
     const mm = {};
     Object.keys(slCosts).forEach((k) => {
-      const p = k.split("_");
+      /* costKey＝商品名_選項，用最後一個底線切：有 5 支商品名本身含「 _ 」
+         （熱銷茶包 _ 3入組 等），從第一個底線切會把名字砍半、後半段變成假規格 */
+      const cut = k.lastIndexOf("_");
       mm[k] = {
         key: k,
-        name: p[0],
-        option: p[1]?.trim() || "標準規格",
+        name: cut >= 0 ? k.slice(0, cut) : k,
+        option: (cut >= 0 ? k.slice(cut + 1) : "").trim() || "標準規格",
         soldQty: 0,
         profitContribution: 0,
         totalRevenue: 0,
@@ -6991,6 +7108,11 @@ function ProfitCenter() {
               ? Number(item.snapshotCost) || 0
               : Number(slEffCosts[item.key]) || 0;
           t.totalQty += item.qty;
+          /* 本期有賣的品項：訂單上的 name/option 才是真名，蓋掉預埋時從 key 拆出來的猜測 */
+          if (mm[item.key]) {
+            mm[item.key].name = item.name;
+            mm[item.key].option = item.option?.trim() || "標準規格";
+          }
           if (!mm[item.key])
             mm[item.key] = {
               key: item.key,
@@ -7380,12 +7502,16 @@ function ProfitCenter() {
     const splitKey = isSL || isPOS;
     const orphans = orphanKeys.map((k) => {
       const nm = usage.nameMap[k];
-      const parts = splitKey ? k.split("_") : null;
+      /* 查無歷史紀錄才從 key 拆；用最後一個底線切（商品名本身可能含「 _ 」） */
+      const cut = splitKey ? k.lastIndexOf("_") : -1;
       return {
         key: k,
-        name: nm?.name || (splitKey ? parts[0] : `（查無商品名）${k}`),
+        name:
+          nm?.name ||
+          (splitKey ? (cut >= 0 ? k.slice(0, cut) : k) : `（查無商品名）${k}`),
         option:
-          nm?.option ?? (splitKey ? parts?.[1]?.trim() || "標準規格" : ""),
+          nm?.option ??
+          (splitKey ? (cut >= 0 ? k.slice(cut + 1) : "").trim() || "標準規格" : ""),
         soldQty: 0,
         profitContribution: 0,
         estProfit: 0,
@@ -7494,24 +7620,33 @@ function ProfitCenter() {
         toast(`已清除 ${keys.length} 項成本/配方`, {
           type: "info",
           action: () => {
-            /* 只補回目前不存在的鍵：使用者在這 10 秒內重填的成本不能被舊值蓋掉 */
-            let skipped = 0;
-            const restore = (setter, removed) =>
+            /* 只補回「目前還是空的」鍵：使用者在這 10 秒內重填的成本不能被舊值蓋掉。
+               「空」的口徑要跟 missCost／CostInput 一樣＝undefined／null／""／0——
+               清除後那格若被聚焦再失焦會 commit 0，用 undefined 判會誤以為使用者填過。
+               略過的鍵用 Set 收（updater 在 StrictMode 會跑兩次，計數器會重複加），
+               而且 updater 要到 React 下一次 render 才執行，提示要等它跑完再讀 */
+            const skipped = new Set();
+            const blankCost = (v) =>
+              v === undefined || v === null || v === "" || !(Number(v) > 0);
+            const blankRecipe = (v) => !Array.isArray(v) || v.length === 0;
+            const restore = (setter, removed, blank) =>
               setter((p) => {
                 const n = { ...p };
                 Object.entries(removed).forEach(([k, v]) => {
-                  if (n[k] === undefined) n[k] = v;
-                  else skipped++;
+                  if (blank(n[k])) n[k] = v;
+                  else skipped.add(k);
                 });
                 return n;
               });
-            restore(setCosts, removedCosts);
-            restore(setRecipes, removedRecipes);
-            if (skipped > 0)
-              toast(`已復原，但略過 ${skipped} 項（清除後已重新填過，保留新值）`, {
-                type: "warning",
-                duration: 8000,
-              });
+            restore(setCosts, removedCosts, blankCost);
+            restore(setRecipes, removedRecipes, blankRecipe);
+            setTimeout(() => {
+              if (skipped.size > 0)
+                toast(
+                  `已復原，但略過 ${skipped.size} 項（清除後已重新填過，保留新值）`,
+                  { type: "warning", duration: 8000 }
+                );
+            }, 0);
           },
           actionLabel: "復原",
         });
@@ -7785,6 +7920,13 @@ function ProfitCenter() {
   const impC = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
+    /* 與報表匯入、成本編輯同一道閘門：首載四份快照到齊前不收寫入，
+       否則首份 meta 快照一到就把剛還原的整張表蓋回雲端版 */
+    if (!cReady) {
+      toast("雲端同步中，請等右上角同步燈變綠再還原", { type: "warning" });
+      e.target.value = "";
+      return;
+    }
     const r = new FileReader();
     r.onload = (ev) => {
       try {
@@ -7820,30 +7962,65 @@ function ProfitCenter() {
                 Array.isArray(v) && v.every((l) => isPlainObj(l) && l.compId)
             )
           );
-          /* 組件是三平台共用：還原舊備份會讓另外兩個平台的配方成本一起變動 */
-          const compChanged = Object.entries(comps).filter(
-            ([id, v]) =>
-              components[id] && Number(components[id].price) !== Number(v.price)
+          /* 組件是三平台共用：還原舊備份會讓另外兩個平台的配方成本一起變動。
+             會變動的兩種：單價不同的、以及「本機已刪但備份裡還有、且還有配方在引用」的
+             （還原會把它復活，引用它的配方成本從 0 跳回單價） */
+          const refIds = new Set();
+          [slRecipes, spRecipes, posRecipes].forEach((rs) =>
+            Object.values(rs || {}).forEach((ls) =>
+              (ls || []).forEach((l) => refIds.add(l.compId))
+            )
+          );
+          const compChanged = Object.entries(comps).filter(([id, v]) =>
+            components[id]
+              ? Number(components[id].price) !== Number(v.price)
+              : refIds.has(id)
           ).length;
+          const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
           const doRestore = () => {
-            const prev = {
-              costs: { ...costs },
-              recipes: { ...recipes },
-              components: { ...components },
-              ratios: { ...posRatios },
+            /* 「匯入前」的值在按確定的當下、從最新 state 裡抓（functional updater），
+               不是選檔那一輪 render 的閉包；而且只記「這次匯入會覆蓋的鍵」——
+               復原時只退這些鍵，別的鍵（可能已被別台改過）不動 */
+            const prev = { costs: {}, recipes: {}, components: {}, ratios: {} };
+            const snap = (bucket, p, incoming) => {
+              Object.keys(incoming).forEach((k) => {
+                if (has(p, k)) bucket[k] = p[k];
+              });
             };
-            setCosts((p) => ({ ...p, ...costsIn }));
-            setRecipes((p) => ({ ...p, ...recs }));
-            setComponents((p) => ({ ...p, ...comps }));
-            if (isPOS) setPosRatios((p) => ({ ...p, ...ratiosIn }));
+            setCosts((p) => {
+              snap(prev.costs, p, costsIn);
+              return { ...p, ...costsIn };
+            });
+            setRecipes((p) => {
+              snap(prev.recipes, p, recs);
+              return { ...p, ...recs };
+            });
+            setComponents((p) => {
+              snap(prev.components, p, comps);
+              return { ...p, ...comps };
+            });
+            if (isPOS)
+              setPosRatios((p) => {
+                snap(prev.ratios, p, ratiosIn);
+                return { ...p, ...ratiosIn };
+              });
+            const revert = (setter, incoming, before) =>
+              setter((p) => {
+                const n = { ...p };
+                Object.keys(incoming).forEach((k) => {
+                  if (has(before, k)) n[k] = before[k];
+                  else delete n[k];
+                });
+                return n;
+              });
             toast("成本＋配方＋原料庫還原成功", {
               type: "success",
               action: () => {
-                setCosts(prev.costs);
-                setRecipes(prev.recipes);
-                setComponents(prev.components);
-                if (isPOS) setPosRatios(prev.ratios);
-                toast("已還原到匯入前的狀態", { type: "info" });
+                revert(setCosts, costsIn, prev.costs);
+                revert(setRecipes, recs, prev.recipes);
+                revert(setComponents, comps, prev.components);
+                if (isPOS) revert(setPosRatios, ratiosIn, prev.ratios);
+                toast("已還原到匯入前的狀態（只退這次匯入的鍵）", { type: "info" });
               },
               actionLabel: "復原",
               duration: 12000,
@@ -7886,11 +8063,25 @@ function ProfitCenter() {
             } 項（舊版備份不含配方與原料庫）。`,
             danger: false,
             onOk: () => {
-              const prev = { ...costs };
-              setCosts((p) => ({ ...p, ...parsed }));
+              /* 同 v2：匯入前的值從最新 state 抓、復原只退這次匯入的鍵 */
+              const before = {};
+              setCosts((p) => {
+                Object.keys(parsed).forEach((k) => {
+                  if (Object.prototype.hasOwnProperty.call(p, k)) before[k] = p[k];
+                });
+                return { ...p, ...parsed };
+              });
               toast("成本資料匯入成功", {
                 type: "success",
-                action: () => setCosts(prev),
+                action: () =>
+                  setCosts((p) => {
+                    const n = { ...p };
+                    Object.keys(parsed).forEach((k) => {
+                      if (Object.prototype.hasOwnProperty.call(before, k)) n[k] = before[k];
+                      else delete n[k];
+                    });
+                    return n;
+                  }),
                 actionLabel: "復原",
                 duration: 12000,
               });
@@ -8220,17 +8411,16 @@ function ProfitCenter() {
     setSoldOnly(false);
     setCleanupOnly(false);
     setTimeout(() => {
-      if (firstMissRef.current) {
-        firstMissRef.current.scrollIntoView({
-          behavior: "smooth",
-          block: "center",
-        });
-        firstMissRef.current.style.outline = "2px solid var(--wn)";
-        firstMissRef.current.style.outlineOffset = "2px";
-        setTimeout(() => {
-          if (firstMissRef.current) firstMissRef.current.style.outline = "none";
-        }, 2000);
-      }
+      /* 記住當初上色的那一列：使用者 2 秒內把它填好後 ref 會移到下一個未填列，
+         清框若重讀 ref 會把下一列的框拿掉、原本那列的框留著 */
+      const el = firstMissRef.current;
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.style.outline = "2px solid var(--wn)";
+      el.style.outlineOffset = "2px";
+      setTimeout(() => {
+        el.style.outline = "none";
+      }, 2000);
     }, 320);
   };
 
@@ -10128,21 +10318,24 @@ function ProfitCenter() {
                           type: "info",
                           action: () => {
                             /* 只補回目前不存在的訂單：這 10 秒內重新匯入的新版本
-                               不能被舊版本蓋回去（確認文案本來就叫人可以重匯） */
-                            let skipped = 0;
+                               不能被舊版本蓋回去（確認文案本來就叫人可以重匯）。
+                               略過數用 Set 收、等 updater 跑完（下一個 tick）再提示 */
+                            const skipped = new Set();
                             setter((p) => {
                               const n = { ...p };
                               Object.entries(removed).forEach(([k, v]) => {
                                 if (n[k] === undefined) n[k] = v;
-                                else skipped++;
+                                else skipped.add(k);
                               });
                               return n;
                             });
-                            if (skipped > 0)
-                              toast(
-                                `已復原，但略過 ${skipped} 筆（清除後已重新匯入，保留新版本）`,
-                                { type: "warning", duration: 8000 }
-                              );
+                            setTimeout(() => {
+                              if (skipped.size > 0)
+                                toast(
+                                  `已復原，但略過 ${skipped.size} 筆（清除後已重新匯入，保留新版本）`,
+                                  { type: "warning", duration: 8000 }
+                                );
+                            }, 0);
                           },
                           actionLabel: "復原",
                         });
