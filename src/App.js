@@ -44,6 +44,10 @@ import {
   ComposedChart,
   Bar,
   Line,
+  /* lucide 也有 PieChart（圖示），recharts 的另取名 */
+  PieChart as RPieChart,
+  Pie,
+  Cell,
 } from "recharts";
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
@@ -2664,6 +2668,51 @@ function OverviewDashboard({
       ? { label: "跌破紅線 10%", c: "var(--dn)" }
       : { label: "整體虧損", c: "var(--dn)" };
 
+  /* 全通路營收圓餅（老闆 2026-09-05 要的）：四片＝官網／蝦皮／門市現場零售／門市其他。
+     門市其他五個小通路合成一片灰——它們原本的「同一紫色五階透明度」拿去當五種類別，
+     用 dataviz 驗色工具跑是硬性不及格（相鄰 ΔE 約 5，正常視力也分不出），三平台色
+     全過。灰＝去強調的「其他」槽；五個通路各自的 % 在右邊圖例與 hover 都看得到。
+     直接標籤只給 ≥4% 的片，其餘靠圖例；片與片之間留 2px 底色縫 */
+  const pieShort = {
+    官網: "官網",
+    蝦皮: "蝦皮",
+    "門市（現場零售）": "門市",
+    門市其他: "門市其他",
+  };
+  const pieData = [
+    { l: "官網", c: greenC, op: 1, v: slD?.rev || 0 },
+    { l: "蝦皮", c: spC, op: 0.85, v: spS?.tG || 0 },
+    { l: "門市（現場零售）", c: posC, op: 0.9, v: posRetail?.rev || 0 },
+    {
+      l: "門市其他",
+      c: "var(--t4)",
+      op: 1,
+      v: posOthers.reduce((s, c) => s + (c.rev || 0), 0),
+      sub: posOthers.map((c) => ({ l: c.label, v: c.rev || 0 })),
+    },
+  ].filter((d) => d.v > 0);
+  const RAD = Math.PI / 180;
+  const renderPieLabel = ({ cx, cy, midAngle, outerRadius, percent, name }) => {
+    if (!(percent >= 0.04)) return null;
+    const r = outerRadius + 12;
+    const x = cx + Math.cos(-midAngle * RAD) * r;
+    const y = cy + Math.sin(-midAngle * RAD) * r;
+    return (
+      <text
+        x={x}
+        y={y}
+        fill="var(--t2)"
+        fontSize={10}
+        fontWeight={700}
+        fontFamily={mono}
+        textAnchor={x > cx ? "start" : "end"}
+        dominantBaseline="central"
+      >
+        {pieShort[name] || name} {(percent * 100).toFixed(1)}%
+      </text>
+    );
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {totalRev === 0 && (
@@ -2934,12 +2983,136 @@ function OverviewDashboard({
                 />
               ))}
             </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+            {/* 圓餅：寬度給 320 是為了讓外側標籤（最長「門市其他 38.2%」）有地方放，環本身在正中 */}
+            {pieData.length > 0 && (
+              <div
+                style={{ position: "relative", width: 320, height: 180, flex: "0 0 auto" }}
+                role="img"
+                aria-label={`全通路營收佔比：${pieData
+                  .map((d) => `${d.l} ${((d.v / totalRev) * 100).toFixed(1)}%`)
+                  .join("、")}`}
+              >
+                <RPieChart width={320} height={180}>
+                  <Pie
+                    data={pieData}
+                    dataKey="v"
+                    nameKey="l"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={74}
+                    paddingAngle={1.5}
+                    stroke="var(--s1)"
+                    strokeWidth={2}
+                    isAnimationActive={false}
+                    labelLine={false}
+                    label={renderPieLabel}
+                  >
+                    {pieData.map((d) => (
+                      <Cell key={d.l} fill={d.c} fillOpacity={d.op} />
+                    ))}
+                  </Pie>
+                  <RTooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null;
+                      const d = payload[0].payload;
+                      const pct = (v) =>
+                        totalRev > 0 ? `${((v / totalRev) * 100).toFixed(1)}%` : "—";
+                      return (
+                        <div
+                          style={{
+                            background: "var(--s1)",
+                            border: "1px solid var(--s3)",
+                            borderRadius: 10,
+                            padding: "10px 14px",
+                            boxShadow: "0 4px 20px rgba(0,0,0,0.12)",
+                            minWidth: 170,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 14,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "var(--t1)",
+                            }}
+                          >
+                            <span>{d.l}</span>
+                            <span style={{ fontFamily: mono }}>
+                              {fmt$(d.v)} · {pct(d.v)}
+                            </span>
+                          </div>
+                          {d.sub && (
+                            <div style={{ marginTop: 6, borderTop: "1px solid var(--s3)", paddingTop: 6 }}>
+                              {d.sub.map((s) => (
+                                <div
+                                  key={s.l}
+                                  style={{
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    gap: 14,
+                                    fontSize: 11,
+                                    color: s.v > 0 ? "var(--t2)" : "var(--t4)",
+                                    lineHeight: 1.7,
+                                  }}
+                                >
+                                  <span>{s.l}</span>
+                                  <span style={{ fontFamily: mono }}>
+                                    {s.v > 0 ? `${fmt$(s.v)} · ${pct(s.v)}` : "—"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }}
+                  />
+                </RPieChart>
+                {/* 環中心：合計營收 */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 160 - 46,
+                    top: 90 - 16,
+                    width: 92,
+                    textAlign: "center",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <div style={{ fontSize: 9, color: "var(--t4)", fontWeight: 700 }}>合計</div>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      fontFamily: mono,
+                      color: "var(--t1)",
+                      letterSpacing: "-0.02em",
+                    }}
+                  >
+                    {fmt$(totalRev)}
+                  </div>
+                </div>
+              </div>
+            )}
             {/* 圖例：官網／蝦皮／門市（現場零售）／電話／Omnichat／經銷／合作／企業 ＝ 8 項全列，沒營收也列 */}
             <div
               style={{
                 display: "flex",
                 flexWrap: "wrap",
                 gap: "6px 14px",
+                flex: "1 1 260px",
+                minWidth: 0,
               }}
             >
               {[
@@ -2984,6 +3157,7 @@ function OverviewDashboard({
                   </div>
                 );
               })}
+            </div>
             </div>
           </div>
 
