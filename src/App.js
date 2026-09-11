@@ -5553,6 +5553,12 @@ function ProfitCenter() {
     [toast]
   );
 
+  /* 分頁名稱：宿主頁面預設叫「React」，手機分頁列／書籤只看得到那四個字。
+     這裡自己設，不管貼到哪個宿主都會對（同 2026-09-11 營收戰情室的做法）。 */
+  useEffect(() => {
+    document.title = "利潤決策中心";
+  }, []);
+
   useEffect(() => {
     persist(SK.theme, theme);
   }, [theme, persist]);
