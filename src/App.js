@@ -2419,6 +2419,13 @@ function OverviewDashboard({
      選整年即為 1-12 月的加權平均 */
   const totalOpex = (slD?.opExpTotal || 0) + (spS?.tOp || 0) + (posS?.op || 0);
   const totalOpexRate = totalRev > 0 ? totalOpex / totalRev : 0;
+  /* 全通路開票率：分子是三平台各自「真的有課到稅」的營收（蝦皮平台一律開立＝全額）。
+     這與 totalNet 裡扣掉的稅同一口徑，不是另外估的數字 */
+  const totalInvoiceRev =
+    (slD?.invoiceRev || 0) + (spS?.tG || 0) + (posS?.invoiceRev || 0);
+  const invoiceRate = totalRev > 0 ? totalInvoiceRev / totalRev : 0;
+  const slInvRate = slD?.rev > 0 ? (slD.invoiceRev || 0) / slD.rev : 0;
+  const posInvRate = posS?.rev > 0 ? (posS.invoiceRev || 0) / posS.rev : 0;
   const slRevShare = totalRev > 0 ? (slD?.rev || 0) / totalRev : 0;
   const spRevShare = totalRev > 0 ? (spS?.tG || 0) / totalRev : 0;
   const posRetail = posCh.find((c) => c.key === "retail") || null;
@@ -2954,6 +2961,29 @@ function OverviewDashboard({
                   ? `（門市 ${posS.noCostCount} 筆算不出成本，計營收不計淨利）`
                   : ""}
               </div>
+              {/* 全通路開票率（老闆 2026-09-15 要的）：分子＝真的有課到稅的營收。
+                  三個平台的判斷不同，所以括號裡把各自的數字攤開，免得只看一個總數會誤會：
+                  官網＝免稅／待開立的單不算；蝦皮＝平台一律開立所以 100%；門市＝只算有發票的單。
+                  這個分子與淨利裡扣的稅同一個口徑，看得到的開票率就是實際被課稅的比例。 */}
+              {totalRev > 0 && (
+                <div
+                  style={{ fontSize: 12, color: "var(--t4)", marginTop: 4 }}
+                  title="開票率＝有課到稅的營收 ÷ 合計營收。官網：報表課稅別「免稅」或發票狀態「待開立」不計；蝦皮：平台一律開立；門市：只算有發票號碼／統編／備註註明的單。"
+                >
+                  全通路開票率{" "}
+                  <b style={{ fontFamily: mono, color: "var(--t2)" }}>
+                    {fmtP(invoiceRate)}
+                  </b>
+                  {"（開票營收 "}
+                  {fmt$(totalInvoiceRev)}
+                  {"）"}
+                  <span style={{ marginLeft: 8 }}>
+                    官網 {slD?.rev > 0 ? fmtP(slInvRate) : "—"}・蝦皮{" "}
+                    {spS?.tG > 0 ? "100.00%" : "—"}・門市{" "}
+                    {posS?.rev > 0 ? fmtP(posInvRate) : "—"}
+                  </span>
+                </div>
+              )}
               <PeriodCompare monthly={allMonthly} sY={sY} sM={sM} />
               {posCompareNote && (
                 <div style={{ fontSize: 10, color: "var(--wn)", marginTop: 4 }}>
@@ -7358,6 +7388,10 @@ function ProfitCenter() {
       voucher: 0,
       opExpTotal: 0,
       taxTotal: 0,
+      /* 有課到稅的營收（＝有開發票的營收）：報表「課稅別＝免稅」或「發票狀態＝待開立」
+         的單不課稅也不算開票，與 slOrderFin 的 isTaxExempt 同一個判斷，
+         總覽的全通路開票率就是拿這個當分子 */
+      invoiceRev: 0,
       rawTotal: 0,
       cancelledTotal: 0,
       contributionMargin: 0,
@@ -7445,6 +7479,7 @@ function ProfitCenter() {
         t.voucher += order.voucherAmount;
         t.opExpTotal += opx;
         t.taxTotal += tax;
+        if (!order.isTaxExempt) t.invoiceRev += ord.revenue;
         if (order.hasReturn || refunded > 0) {
           t.returnCount++;
           t.returnRev += refunded;
