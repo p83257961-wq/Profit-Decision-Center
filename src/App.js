@@ -585,7 +585,6 @@ tr.rl:hover td{background:var(--row-loss)!important;}
 @media(max-width:600px){
   .page-wrap{padding:12px 12px 48px!important;}
   .hd-wrap{padding:8px 12px!important;gap:6px!important;}
-  .hd-sub{display:none!important;}
   /* 卡片內距 24→14。比對的是 inline style 字串，日後若把 padding 改成別的值，
      這幾行會靜靜失效（不會壞版面），那時同步改這裡的數字即可 */
   .page-wrap [style*="padding: 24px"]{padding:14px!important;}
@@ -1254,10 +1253,14 @@ function POSDashboard({
   }, [dq, lossOnly, sort, sY, sM]);
   const allKeys = data.channels.map((c) => c.key);
   const excludedKeys = allKeys.filter((k) => !included.includes(k));
-  const scopeLabel = data.channels
-    .filter((c) => !c.excluded)
-    .map((c) => c.label)
-    .join("＋");
+  /* 六個通路全勾時不再把六個名字串成一長串（老闆 2026-09-17 嫌字太多），只勾部分才列名 */
+  const scopeLabel =
+    excludedKeys.length === 0 && allKeys.length > 1
+      ? "六通路"
+      : data.channels
+          .filter((c) => !c.excluded)
+          .map((c) => c.label)
+          .join("＋");
   const netColor = posNetColor(s.netMargin, posTarget);
   const covColor = posCovColor(s.costCoverage);
   const cth = {
@@ -1528,7 +1531,7 @@ function POSDashboard({
                 letterSpacing: "0.06em",
               }}
             >
-              最終結算淨利 · NET PROFIT
+              最終結算淨利
             </div>
             <div
               className="hero-num"
@@ -1599,7 +1602,7 @@ function POSDashboard({
               letterSpacing: "0.06em",
             }}
           >
-            損益分解 · WATERFALL
+            損益分解
             {s.noCostCount > 0 && (
               <span style={{ fontWeight: 500, color: "var(--t4)", marginLeft: 8 }}>
                 （只含成本齊全的 {s.valid - s.noCostCount} 筆）
@@ -1730,7 +1733,7 @@ function POSDashboard({
             }}
           >
             <span style={{ fontSize: 10, color: "var(--t4)" }}>
-              勾選＝計入上方 KPI 與商品表（預設只算現場零售）
+              勾選＝計入 KPI
             </span>
             {excludedKeys.length > 0 && (
               <Btn onClick={() => onSetIncluded(allKeys)} style={{ fontSize: 10 }}>
@@ -2654,12 +2657,14 @@ function OverviewDashboard({
     const prevYm =
       mNum === 1 ? `${Number(sY) - 1}-12` : `${sY}-${String(mNum - 1).padStart(2, "0")}`;
     const yoyYm = `${Number(sY) - 1}-${sM}`;
+    /* 只在「那個比較真的有顯示」時才標：基期連官網蝦皮都沒資料（例：2025 年沒匯），
+       同比本來就不會顯示，這時再標一行註腳等於在解釋不存在的數字（老闆 2026-09-17 嫌字多） */
+    const hasCo = (ym) =>
+      !!(monthlyByPlatform?.sl?.[ym] || monthlyByPlatform?.sp?.[ym]);
     const miss = [];
-    if (!pm[prevYm]) miss.push("環比");
-    if (!pm[yoyYm]) miss.push("同比");
-    return miss.length
-      ? `※ ${miss.join("／")}含門市但比較基期無門市資料（門市 2026-08 起才有），非同口徑`
-      : null;
+    if (hasCo(prevYm) && !pm[prevYm]) miss.push("環比");
+    if (hasCo(yoyYm) && !pm[yoyYm]) miss.push("同比");
+    return miss.length ? `※ ${miss.join("／")}基期無門市資料，非同口徑` : null;
   }, [monthlyByPlatform, sY, sM]);
 
   /* 月度趨勢固定顯示整年（或歷年最近 12 個月），不受單月篩選影響；
@@ -3021,6 +3026,7 @@ function OverviewDashboard({
             </div>
             <div>
               <div
+                title="依各月快照％營收加權（含廣告）"
                 style={{
                   fontSize: 11,
                   fontWeight: 600,
@@ -3068,17 +3074,14 @@ function OverviewDashboard({
                 >
                   {
                     [
-                      "✓ 在 OPEX 目標 30% 內（年度預算線）",
-                      "⚠ 高於目標 30%，仍在 FY2026 可接受帶 33% 內",
-                      "⚠ 33–35%：活動月加碼可接受，淡月要收回來",
-                      "⚠ 超過活動月上限 35%，需檢討",
+                      "✓ 在目標 30% 內",
+                      "⚠ 30–33% 可接受帶",
+                      "⚠ 33–35% 活動月可接受",
+                      "⚠ 超過 35%，需檢討",
                     ][opexBandOf(totalOpexRate)]
                   }
                 </div>
               )}
-              <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 2 }}>
-                依各月快照％營收加權（含廣告）
-              </div>
             </div>
             {/* 全通路營收圓餅：放 Hero 列右側空位（老闆 2026-09-05 指定）。寬 320 是給外側
                 直接標籤留位（最長「門市 38.2%」），環在正中；視窗窄時自動換行到下一列 */}
@@ -3516,7 +3519,7 @@ function OverviewDashboard({
                   gap: 6,
                 }}
               >
-                門市其他通路（不計入「門市」，各自獨立；卡片左邊色條＝該通路在圓餅／圖例的顏色）
+                門市其他通路（各自獨立，不計入「門市」）
               </div>
               <div
                 style={{
@@ -3619,7 +3622,13 @@ function OverviewDashboard({
               <div
                 style={{ width: 8, height: 8, borderRadius: 2, background: posC }}
               />
-              門市六通路 · {periodLabel}
+              <span
+                title={`門市無平台抽成；毛利率／淨利率只算成本齊全的單；稅只課有開發票的單。淨利率綠＝達門市目標 ${fmtP(
+                  posTarget
+                )}（六通路同一把尺）。灰色通路＝本期還沒有訂單。`}
+              >
+                門市六通路 · {periodLabel}
+              </span>
             </div>
             <span style={{ fontSize: 11, color: "var(--t3)" }}>
               合計 {fmt$(posS.rev)} ｜ {posS.orders} 筆 ｜ 淨利率{" "}
@@ -3790,12 +3799,6 @@ function OverviewDashboard({
                 })}
               </tbody>
             </table>
-          </div>
-          <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 10, lineHeight: 1.6 }}>
-            門市無平台抽成；毛利率／淨利率只算成本齊全的單；稅只課有開發票的單。淨利率綠＝達門市目標
-            {fmtP(posTarget)}（六通路同一把尺）。
-            {posCh.some((c) => c.orders === 0) &&
-              "　灰色通路＝本期還沒有訂單（員工開單時選對應付款方式就會出現）。"}
           </div>
         </div>
       )}
@@ -4253,7 +4256,7 @@ function OverviewDashboard({
             <Package size={14} color="var(--t3)" /> 官網 × 蝦皮 銷售排行
           </div>
           <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 16 }}>
-            綠 = 官網　橘 = 蝦皮（門市品名格式不同、未納入）
+            綠＝官網・橘＝蝦皮（不含門市）
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {crossProductRank.map((p, i) => {
@@ -8865,8 +8868,7 @@ function ProfitCenter() {
                 lineHeight: 1.7,
               }}
             >
-              沒有規格可查的品項（例：「茶葉」）用成本率估：成本＝該筆營收 ×
-              率。填了率就不算未填成本，明細會標「估」。
+              無規格品項以成本率估算，填了率即不算未填
             </div>
           </div>
           {posRatioSuggest && (
@@ -9070,7 +9072,9 @@ function ProfitCenter() {
                         <ChevronDown size={13} color="var(--t3)" />
                       )}
                       <Layers size={13} color="var(--accent-text)" />
-                      成本組件（原料庫・兩平台共用）
+                      <span title="改一顆單價＝所有掛配方的商品自動重算（已鎖定月份不受影響）。商品掛配方：點商品列尾的配方圖示。">
+                        原料庫（三平台共用）
+                      </span>
                       <span
                         style={{
                           fontFamily: mono,
@@ -9096,22 +9100,7 @@ function ProfitCenter() {
                     </div>
                     {compPanelOpen && (
                       <>
-                        <div
-                          style={{
-                            fontSize: 10,
-                            color: "var(--t4)",
-                            margin: "6px 0 10px",
-                            lineHeight: 1.6,
-                          }}
-                        >
-                          改這裡一個單價＝所有掛配方的商品自動重算（已鎖定月份不受影響）。商品掛配方：點商品列尾的
-                          <Layers
-                            size={10}
-                            style={{ margin: "0 2px", verticalAlign: "-1px" }}
-                          />
-                          圖示。
-                        </div>
-                        <div style={{ position: "relative", marginBottom: 8 }}>
+                        <div style={{ position: "relative", marginBottom: 8, marginTop: 8 }}>
                           <Search
                             size={12}
                             color="var(--t4)"
@@ -10139,17 +10128,6 @@ function ProfitCenter() {
                   : "蝦皮"}{" "}
                 利潤決策中心
               </h1>
-              <div
-                className="hd-sub"
-                style={{
-                  fontSize: 10,
-                  color: "var(--t3)",
-                  fontFamily: mono,
-                  letterSpacing: "0.06em",
-                }}
-              >
-                PROFIT INTELLIGENCE · FIREBASE SYNC
-              </div>
             </div>
           </div>
           <div
@@ -10498,8 +10476,7 @@ function ProfitCenter() {
                         lineHeight: 1.6,
                       }}
                     >
-                      鎖定的訂單以上述參數計算，下方輸入僅影響未鎖定期間。
-                      要修正本期 %：解除快照 → 改參數 → 重新鎖定。
+                      要改本期 %：解除快照 → 改參數 → 重新鎖定
                     </div>
                   </div>
                 )}
@@ -10569,7 +10546,7 @@ function ProfitCenter() {
                       {slFp.tax}%
                     </b>
                     <div style={{ fontSize: 10, color: "var(--t4)" }}>
-                      全公司共用一組，到「官網」頁調整
+                      全公司共用，官網頁調整
                     </div>
                   </div>
                 )}
@@ -10905,7 +10882,7 @@ function ProfitCenter() {
                               letterSpacing: "0.06em",
                             }}
                           >
-                            最終結算淨利 · NET PROFIT
+                            最終結算淨利
                           </div>
                           <div
                             className="hero-num"
@@ -11000,7 +10977,7 @@ function ProfitCenter() {
                             letterSpacing: "0.06em",
                           }}
                         >
-                          損益分解 · WATERFALL
+                          損益分解
                         </div>
                         <div
                           style={{
@@ -11088,7 +11065,7 @@ function ProfitCenter() {
                           l: "預估總入帳",
                           v: fmt$(slD.inbound),
                           c: "var(--blue)",
-                          h: "扣除金流+物流+平台費",
+                          tip: "扣除金流、物流、平台費後的入帳金額",
                         },
                         {
                           l: "商品毛利率",
@@ -11141,6 +11118,7 @@ function ProfitCenter() {
                       ].map((k, i) => (
                         <div
                           key={i}
+                          title={k.tip}
                           style={{
                             background: "var(--s1)",
                             border: "1px solid var(--s3)",
@@ -11161,15 +11139,17 @@ function ProfitCenter() {
                           >
                             {k.v}
                           </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: "var(--t4)",
-                              marginTop: 8,
-                            }}
-                          >
-                            {k.h}
-                          </div>
+                          {k.h && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--t4)",
+                                marginTop: 8,
+                              }}
+                            >
+                              {k.h}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -11181,14 +11161,14 @@ function ProfitCenter() {
                           v: fmt$(slD.net / (slD.valid || 1)),
                           c: slD.net >= 0 ? "var(--up)" : "var(--dn)",
                           ic: <PieChart size={13} />,
-                          h: "平均每筆訂單實際貢獻盈餘",
+                          tip: "淨利 ÷ 有效訂單：平均每筆訂單實際貢獻盈餘",
                         },
                         {
                           l: "通路總成本佔比",
                           v: fmtP(slD.realCommissionRate),
                           c: "var(--blue)",
                           ic: <CreditCard size={13} />,
-                          h: "金流＋物流＋系統費",
+                          tip: "金流＋物流＋系統費 ÷ 營收",
                         },
                         {
                           l: "營收折讓率",
@@ -11239,6 +11219,7 @@ function ProfitCenter() {
                       ].map((k, i) => (
                         <div
                           key={i}
+                          title={k.tip}
                           style={{
                             background: "var(--s1)",
                             border: "1px solid var(--s3)",
@@ -11270,15 +11251,17 @@ function ProfitCenter() {
                           >
                             {k.v}
                           </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: "var(--t4)",
-                              marginTop: 8,
-                            }}
-                          >
-                            {k.h}
-                          </div>
+                          {k.h && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--t4)",
+                                marginTop: 8,
+                              }}
+                            >
+                              {k.h}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -11289,7 +11272,7 @@ function ProfitCenter() {
                           l: "平均客單價 AOV",
                           v: fmt$(slD.rev / (slD.valid || 1)),
                           c: "var(--t1)",
-                          h: "營收 ÷ 有效訂單（含運費收入）",
+                          tip: "營收 ÷ 有效訂單（含運費收入）",
                         },
                         {
                           l: "加購品營收",
@@ -11305,11 +11288,13 @@ function ProfitCenter() {
                             slD.valid > 0 ? slD.addOnOrders / slD.valid : 0
                           ),
                           c: "var(--blue)",
-                          h: `有加購的訂單 ${slD.addOnOrders}/${slD.valid} 筆・每月加價購檔期成效`,
+                          h: `有加購的訂單 ${slD.addOnOrders}/${slD.valid} 筆`,
+                          tip: "每月加價購檔期成效：有加購的訂單 ÷ 有效訂單",
                         },
                       ].map((k, i) => (
                         <div
                           key={i}
+                          title={k.tip}
                           style={{
                             background: "var(--s1)",
                             border: "1px solid var(--s3)",
@@ -11338,15 +11323,17 @@ function ProfitCenter() {
                           >
                             {k.v}
                           </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: "var(--t4)",
-                              marginTop: 8,
-                            }}
-                          >
-                            {k.h}
-                          </div>
+                          {k.h && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--t4)",
+                                marginTop: 8,
+                              }}
+                            >
+                              {k.h}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -11444,7 +11431,7 @@ function ProfitCenter() {
                               letterSpacing: "0.06em",
                             }}
                           >
-                            最終結算淨利 · NET PROFIT
+                            最終結算淨利
                           </div>
                           <div
                             className="hero-num"
@@ -11533,7 +11520,7 @@ function ProfitCenter() {
                             letterSpacing: "0.06em",
                           }}
                         >
-                          損益分解 · WATERFALL
+                          損益分解
                         </div>
                         <div
                           style={{
@@ -11624,7 +11611,7 @@ function ProfitCenter() {
                           l: "預估總入帳",
                           v: fmt$(spS.tG - spS.tF),
                           c: "var(--blue)",
-                          h: "扣除手續費（賣場券已在營收扣過，不重複扣）",
+                          tip: "營收扣除手續費（賣場券已在營收扣過，不重複扣）",
                         },
                         {
                           l: "商品毛利",
@@ -11651,6 +11638,7 @@ function ProfitCenter() {
                       ].map((k, i) => (
                         <div
                           key={i}
+                          title={k.tip}
                           style={{
                             background: "var(--s1)",
                             border: `1px solid ${k.border || "var(--s3)"}`,
@@ -11674,15 +11662,17 @@ function ProfitCenter() {
                           >
                             {k.v}
                           </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: k.hc || "var(--t4)",
-                              marginTop: 8,
-                            }}
-                          >
-                            {k.h}
-                          </div>
+                          {k.h && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: k.hc || "var(--t4)",
+                                marginTop: 8,
+                              }}
+                            >
+                              {k.h}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -11717,7 +11707,7 @@ function ProfitCenter() {
                           l: "真實抽成率",
                           v: fmtP(spS.feeRate),
                           c: "var(--blue)",
-                          note: "結算檔實際手續費＋蝦幣回饋 ÷ 營收（實測值，非固定費率）",
+                          tip: "結算檔實際手續費＋蝦幣回饋 ÷ 營收（實測值，非固定費率）",
                         },
                         {
                           l: "優惠券發放率",
@@ -11768,6 +11758,7 @@ function ProfitCenter() {
                       ].map((k, i) => (
                         <div
                           key={i}
+                          title={k.tip}
                           style={{
                             background: "var(--s1)",
                             border: "1px solid var(--s3)",
@@ -11796,28 +11787,30 @@ function ProfitCenter() {
                           >
                             {k.v}
                           </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: "var(--t4)",
-                              marginTop: 8,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 4,
-                            }}
-                          >
-                            <span
+                          {k.note && (
+                            <div
                               style={{
-                                display: "inline-block",
-                                width: 5,
-                                height: 5,
-                                borderRadius: "50%",
-                                background: k.c,
-                                flexShrink: 0,
+                                fontSize: 11,
+                                color: "var(--t4)",
+                                marginTop: 8,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
                               }}
-                            />
-                            {k.note}
-                          </div>
+                            >
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  width: 5,
+                                  height: 5,
+                                  borderRadius: "50%",
+                                  background: k.c,
+                                  flexShrink: 0,
+                                }}
+                              />
+                              {k.note}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -11828,13 +11821,13 @@ function ProfitCenter() {
                           l: "平均客單價 AOV",
                           v: fmt$(spS.avgAOV),
                           c: "var(--t1)",
-                          h: "優惠券門檻設計的錨點指標（含補貼還原）",
+                          tip: "優惠券門檻設計的錨點指標（含補貼還原）",
                         },
                         {
                           l: "單筆平均淨利",
                           v: fmt$(spS.avgNetPer),
                           c: spS.avgNetPer >= 0 ? "var(--up)" : "var(--dn)",
-                          h: "已扣分潤後平均每單實際貢獻",
+                          tip: "已扣分潤後平均每單實際貢獻",
                         },
                         {
                           l: "退貨/退款排除",
@@ -11845,6 +11838,7 @@ function ProfitCenter() {
                       ].map((k, i) => (
                         <div
                           key={i}
+                          title={k.tip}
                           style={{
                             background: "var(--s1)",
                             border: "1px solid var(--s3)",
@@ -11873,15 +11867,17 @@ function ProfitCenter() {
                           >
                             {k.v}
                           </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: "var(--t4)",
-                              marginTop: 8,
-                            }}
-                          >
-                            {k.h}
-                          </div>
+                          {k.h && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--t4)",
+                                marginTop: 8,
+                              }}
+                            >
+                              {k.h}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
