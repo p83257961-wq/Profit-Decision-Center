@@ -101,11 +101,26 @@ const posChannelOf = (payMethod) => {
 };
 const posChannelLabel = (key) =>
   POS_CHANNELS.find((c) => c.key === key)?.label || "現場零售";
-/* 老客單判定（老闆 2026-10-26：「用公版 才是 老顧客」）：單裡任何一行商品名含「公版」＝老客單。
-   只用來把通路拆解的現場零售再拆成「公版（老客）／一般零售」兩行看；
-   通路歸類、KPI 計入、合計都不變（老客到店付款算現場零售是老闆同日裁示） */
+/* 老客單判定（老闆 2026-10-26：「用公版 才是 老顧客」）：單裡任何一行商品名含「公版」＝老客單 */
 const posIsGongbanOrder = (order) =>
   (order?.items || []).some((it) => String(it?.name || "").includes("公版"));
+/* 公版單歸經銷·老客價（老闆 2026-10-26「搬」）：付款方式判成現場零售、但單裡有公版品項的單，
+   計算時改算經銷·老客價（公版＝老客價商品，跟老闆自己打的經銷單是同一群客人、同一種價）。
+   只在讀取端換（期間彙總／月表／總覽趨勢），雲端原始資料的 channel 不動、隨時可改回；
+   寫入（發票覆寫、鎖定、重置、匯入合併）一律用原始 posOrders */
+const posEffectiveOrders = (orders) => {
+  const out = {};
+  Object.entries(orders || {}).forEach(([k, o]) => {
+    /* 跟 posData 歸桶同一套：channel 缺漏或不認得的值也算現場零售 */
+    const ch =
+      o && POS_CHANNELS.some((c) => c.key === o.channel) ? o.channel : "retail";
+    out[k] =
+      o && ch === "retail" && posIsGongbanOrder(o)
+        ? { ...o, channel: "dealer", gongbanMoved: true }
+        : o;
+  });
+  return out;
+};
 /* 交接檔七的通路表裡「歸現場零售」的付款方式。比不到這張表、又被 posChannelOf 落到 retail 的
    （例：foodpanda）匯入時要點名，不能無聲灌進現場零售（2026-09-23 盤查 C02） */
 const POS_RETAIL_PAY_KNOWN = /現金|信用卡|LINE\s*Pay|轉帳|ATM|宅配|超商|貨到付款/i;
@@ -1375,11 +1390,11 @@ function POSDashboard({
   const ctdL = { ...ctd, textAlign: "left", fontFamily: "inherit" };
   /* 通路合計（只算勾選中的通路，與 KPI 同口徑） */
   const chTotal = sumPosChannels(data.channels.filter((c) => !c.excluded));
-  /* 現場零售底下拆「公版（老客）／一般零售」兩行（老闆 2026-10-26）：只看不勾選、不進合計。
-     本期有公版單就拆（全是公版時一般零售列 0 筆，看得出 100% 老客）；沒有公版單就不多兩行 */
-  const retailSplitRows =
-    data.retailSplit && data.retailSplit.gongban.orders > 0
-      ? [data.retailSplit.gongban, data.retailSplit.plain]
+  /* 經銷·老客價底下拆兩行看來源（老闆 2026-10-26 零售付款的公版單改歸這裡）：只看不勾選、不進合計。
+     本期有搬過來的公版單才拆（全是搬過來的時另一行 0 筆）；沒有就不多兩行 */
+  const dealerSplitRows =
+    data.dealerSplit && data.dealerSplit.moved.orders > 0
+      ? [data.dealerSplit.direct, data.dealerSplit.moved]
       : [];
   /* 訂單表：跟著上方「通路分組」的勾選走（老闆 2026-09-03：勾哪個通路就只看那個
      通路的訂單）。以前是全通路都列、未計入的灰掉，但那樣表頭的虧損／缺成本筆數
@@ -1882,7 +1897,7 @@ function POSDashboard({
                 const nm = c.coveredRev > 0 ? c.coveredNet / c.coveredRev : 0;
                 const cov = c.rev > 0 ? (c.rev - c.noCostRev) / c.rev : 0;
                 const isDealer = c.key === "dealer";
-                const split = c.key === "retail" ? retailSplitRows : [];
+                const split = isDealer ? dealerSplitRows : [];
                 return (
                   <React.Fragment key={c.key}>
                   <tr
@@ -1974,9 +1989,9 @@ function POSDashboard({
                         <td
                           style={{ ...ctdL, fontSize: 11, color: "var(--t3)" }}
                           title={
-                            b.key === "retail_gongban"
-                              ? "單裡有任何一項「公版」商品＝老客單（老闆 2026-10-26 定義）；仍算現場零售"
-                              : "現場零售扣掉含公版品項的單；沒商品明細、或品項只打「茶葉」泛稱的單分不出新舊客，也算在這裡"
+                            b.key === "dealer_gongban"
+                              ? "付款方式是現金／刷卡／轉帳等（原本算現場零售），但單裡有任何一項公版品項＝老客單，計算時歸到經銷·老客價（老闆 2026-10-26）；POS 原始資料不動"
+                              : "POS 付款方式選「經銷／老客價」的單（含預訂列選經銷、結清付現金）"
                           }
                         >
                           {/* 縮排放在內容裡：手機版 .tb-ch td 的 padding-left 帶 !important，行內 padding 會被蓋掉 */}
@@ -1990,7 +2005,7 @@ function POSDashboard({
                         </td>
                         <td style={sub}>{b.orders}</td>
                         <td style={sub}>{b.orders > 0 ? fmt$(b.rev / b.orders) : "—"}</td>
-                        {/* 0 筆（例：全是公版時的一般零售列）顯示「—」不上紅色 */}
+                        {/* 0 筆（例：本期沒有付款＝經銷的單時，那一列）顯示「—」不上紅色 */}
                         <td style={{ ...sub, color: b.coveredRev > 0 ? posGmColor(bgm) : sub.color }}>
                           {b.coveredRev > 0 ? fmtP(bgm) : "—"}
                         </td>
@@ -2053,7 +2068,7 @@ function POSDashboard({
         {(s.noCostRev > 0 ||
           s.testCount > 0 ||
           s.cancelledTotal > 0 ||
-          retailSplitRows.length > 0) && (
+          dealerSplitRows.length > 0) && (
           <div
             style={{
               marginTop: 12,
@@ -2062,9 +2077,9 @@ function POSDashboard({
               lineHeight: 1.7,
             }}
           >
-            {retailSplitRows.length > 0 && (
+            {dealerSplitRows.length > 0 && (
               <div>
-                ※ 公版（老客）＝單裡有任何一項公版品項，仍算現場零售；沒商品明細或只打「茶葉」泛稱的單分不出來，算在一般零售
+                ※ 有公版品項的單（付款是現金／刷卡／轉帳等）算經銷·老客價，不算現場零售——只勾現場零售時不計入 KPI；沒商品明細或只打「茶葉」泛稱的單分不出來，仍算現場零售
               </div>
             )}
             {s.noCostRev > 0 && (
@@ -7586,11 +7601,13 @@ function ProfitCenter() {
     () => resolveCosts(posCosts, posRecipes, components),
     [posCosts, posRecipes, components]
   );
+  /* 計算用的門市訂單：零售付款的公版單改歸經銷·老客價（posEffectiveOrders）。只給讀取端用 */
+  const posOrdersEff = useMemo(() => posEffectiveOrders(posOrders), [posOrders]);
 
   /* ─── Shopline Data Processing ────────────────────────────── */
   /* ─── 門市 POS 期間彙總 ─────────────────────────────────────── */
   const posData = useMemo(() => {
-    const all = Object.values(posOrders);
+    const all = Object.values(posOrdersEff);
     if (!all.length) return null;
     const years = [...new Set(all.map((o) => String(o.date).substring(0, 4)))]
       .filter(Boolean)
@@ -7676,10 +7693,12 @@ function ProfitCenter() {
     POS_CHANNELS.forEach((c) => {
       byChannel[c.key] = mkBucket(c.key, c.label);
     });
-    /* 現場零售再拆兩桶（posIsGongbanOrder）：只給通路拆解表看，不進合計、不影響計入 */
-    const retailSplit = {
-      gongban: mkBucket("retail_gongban", "公版（老客）"),
-      plain: mkBucket("retail_plain", "一般零售"),
+    /* 經銷·老客價再拆兩桶：付款方式本來就是經銷／老客價的、跟從現場零售搬過來的公版單
+       （posEffectiveOrders）。只給通路拆解表看出來源，不進合計、不影響計入。
+       搬過來的不一定都是到店（付款也可能是轉帳／宅配），標籤寫「零售付款」不寫「到店」 */
+    const dealerSplit = {
+      direct: mkBucket("dealer_direct", "付款＝經銷／老客價"),
+      moved: mkBucket("dealer_gongban", "公版（零售付款）"),
     };
     const mm = {};
     /* 未計入通路賣出的品項：商品表不收（KPI 口徑），但成本資料庫要看得到、未填成本要算得到——
@@ -7708,9 +7727,9 @@ function ProfitCenter() {
       const ch = byChannel[order.channel] || byChannel.retail;
       /* 通路層一律照算（表上看得到）；總計 KPI／商品表只加未被排除的通路 */
       addBucket(ch, fin, order);
-      if (ch.key === "retail")
+      if (ch.key === "dealer")
         addBucket(
-          posIsGongbanOrder(order) ? retailSplit.gongban : retailSplit.plain,
+          order.gongbanMoved ? dealerSplit.moved : dealerSplit.direct,
           fin,
           order
         );
@@ -7728,7 +7747,8 @@ function ProfitCenter() {
         estCost: fin.estCost,
         excludedCh: excluded,
         swapSuspect: posSwapSuspect(order.items),
-        channelLabel: posChannelLabel(order.channel),
+        channelLabel:
+          posChannelLabel(order.channel) + (order.gongbanMoved ? "（公版）" : ""),
       });
       if (excluded) {
         order.items.forEach((it) => {
@@ -7829,7 +7849,7 @@ function ProfitCenter() {
       channels: POS_CHANNELS.map((c) => byChannel[c.key])
         .filter((c) => c.rev > 0 || c.orders > 0)
         .map((c) => ({ ...c, excluded: !posIncluded.includes(c.key) })),
-      retailSplit,
+      dealerSplit,
       /* 總覽用：六個通路一律列出（沒單的也給 0 列），且不受「計入清單」影響 */
       channelsAll: POS_CHANNELS.map((c) => ({
         ...byChannel[c.key],
@@ -7849,14 +7869,14 @@ function ProfitCenter() {
         invoiceRate: t.rev > 0 ? t.invoiceRev / t.rev : 0,
       },
     };
-  }, [posOrders, posEffCosts, posRatios, slFp, inPeriod, posIncluded]);
+  }, [posOrdersEff, posEffCosts, posRatios, slFp, inPeriod, posIncluded]);
 
   /* 門市每月營收／淨利（環比同比用；門市頁＝計入的通路；總覽＝全部通路）。
      淨利只算成本齊全的單 */
   const buildPosMonthly = useCallback(
     (channelFilter) => {
       const map = {};
-      Object.values(posOrders).forEach((o) => {
+      Object.values(posOrdersEff).forEach((o) => {
         const ym = String(o.date || "").substring(0, 7);
         if (ym.length < 7) return;
         if (channelFilter && !channelFilter.includes(o.channel)) return;
@@ -7870,7 +7890,7 @@ function ProfitCenter() {
       });
       return map;
     },
-    [posOrders, slFp, posEffCosts, posRatios]
+    [posOrdersEff, slFp, posEffCosts, posRatios]
   );
   const posMonthly = useMemo(
     () => buildPosMonthly(posIncluded),
@@ -11499,7 +11519,7 @@ function ProfitCenter() {
                 posTarget={posTargetOf(slFp)}
                 slOrders={slOrders}
                 spOrders={spOrders}
-                posOrders={posOrders}
+                posOrders={posOrdersEff}
                 slCosts={slEffCosts}
                 spCosts={spEffCosts}
                 allMonthly={allMonthly}
