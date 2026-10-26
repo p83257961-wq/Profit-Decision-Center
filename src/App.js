@@ -101,6 +101,11 @@ const posChannelOf = (payMethod) => {
 };
 const posChannelLabel = (key) =>
   POS_CHANNELS.find((c) => c.key === key)?.label || "現場零售";
+/* 老客單判定（老闆 2026-10-26：「用公版 才是 老顧客」）：單裡任何一行商品名含「公版」＝老客單。
+   只用來把通路拆解的現場零售再拆成「公版（老客）／一般零售」兩行看；
+   通路歸類、KPI 計入、合計都不變（老客到店付款算現場零售是老闆同日裁示） */
+const posIsGongbanOrder = (order) =>
+  (order?.items || []).some((it) => String(it?.name || "").includes("公版"));
 /* 交接檔七的通路表裡「歸現場零售」的付款方式。比不到這張表、又被 posChannelOf 落到 retail 的
    （例：foodpanda）匯入時要點名，不能無聲灌進現場零售（2026-09-23 盤查 C02） */
 const POS_RETAIL_PAY_KNOWN = /現金|信用卡|LINE\s*Pay|轉帳|ATM|宅配|超商|貨到付款/i;
@@ -1370,6 +1375,12 @@ function POSDashboard({
   const ctdL = { ...ctd, textAlign: "left", fontFamily: "inherit" };
   /* 通路合計（只算勾選中的通路，與 KPI 同口徑） */
   const chTotal = sumPosChannels(data.channels.filter((c) => !c.excluded));
+  /* 現場零售底下拆「公版（老客）／一般零售」兩行（老闆 2026-10-26）：只看不勾選、不進合計。
+     本期有公版單就拆（全是公版時一般零售列 0 筆，看得出 100% 老客）；沒有公版單就不多兩行 */
+  const retailSplitRows =
+    data.retailSplit && data.retailSplit.gongban.orders > 0
+      ? [data.retailSplit.gongban, data.retailSplit.plain]
+      : [];
   /* 訂單表：跟著上方「通路分組」的勾選走（老闆 2026-09-03：勾哪個通路就只看那個
      通路的訂單）。以前是全通路都列、未計入的灰掉，但那樣表頭的虧損／缺成本筆數
      會跟 Hero 對不起來，逐筆看某個通路也要自己用眼睛挑 */
@@ -1871,9 +1882,10 @@ function POSDashboard({
                 const nm = c.coveredRev > 0 ? c.coveredNet / c.coveredRev : 0;
                 const cov = c.rev > 0 ? (c.rev - c.noCostRev) / c.rev : 0;
                 const isDealer = c.key === "dealer";
+                const split = c.key === "retail" ? retailSplitRows : [];
                 return (
+                  <React.Fragment key={c.key}>
                   <tr
-                    key={c.key}
                     style={{
                       background: isDealer ? accentDim : "transparent",
                       opacity: c.excluded ? 0.4 : 1,
@@ -1951,6 +1963,50 @@ function POSDashboard({
                       {c.rev > 0 ? fmtP(c.invoiceRev / c.rev) : "—"}
                     </td>
                   </tr>
+                  {split.map((b) => {
+                    const bgm = b.coveredRev > 0 ? b.coveredGp / b.coveredRev : 0;
+                    const bnm = b.coveredRev > 0 ? b.coveredNet / b.coveredRev : 0;
+                    const bcov = b.rev > 0 ? (b.rev - b.noCostRev) / b.rev : 0;
+                    const sub = { ...ctd, fontSize: 11, color: "var(--t3)" };
+                    return (
+                      <tr key={b.key} style={{ opacity: c.excluded ? 0.4 : 1 }}>
+                        <td style={sub}></td>
+                        <td
+                          style={{ ...ctdL, fontSize: 11, color: "var(--t3)" }}
+                          title={
+                            b.key === "retail_gongban"
+                              ? "單裡有任何一項「公版」商品＝老客單（老闆 2026-10-26 定義）；仍算現場零售"
+                              : "現場零售扣掉含公版品項的單；沒商品明細、或品項只打「茶葉」泛稱的單分不出新舊客，也算在這裡"
+                          }
+                        >
+                          {/* 縮排放在內容裡：手機版 .tb-ch td 的 padding-left 帶 !important，行內 padding 會被蓋掉 */}
+                          <span style={{ display: "inline-block", paddingLeft: 12 }}>
+                            └ {b.label}
+                          </span>
+                        </td>
+                        <td style={sub}>{fmt$(b.rev)}</td>
+                        <td style={sub}>
+                          {chTotal.rev > 0 && !c.excluded ? fmtP(b.rev / chTotal.rev) : "—"}
+                        </td>
+                        <td style={sub}>{b.orders}</td>
+                        <td style={sub}>{b.orders > 0 ? fmt$(b.rev / b.orders) : "—"}</td>
+                        {/* 0 筆（例：全是公版時的一般零售列）顯示「—」不上紅色 */}
+                        <td style={{ ...sub, color: b.coveredRev > 0 ? posGmColor(bgm) : sub.color }}>
+                          {b.coveredRev > 0 ? fmtP(bgm) : "—"}
+                        </td>
+                        <td style={{ ...sub, color: b.coveredRev > 0 ? posNetColor(bnm, posTarget) : sub.color }}>
+                          {b.coveredRev > 0 ? fmtP(bnm) : "—"}
+                        </td>
+                        <td style={{ ...sub, color: b.rev > 0 ? posCovColor(bcov) : sub.color }}>
+                          {b.rev > 0 ? fmtP(bcov) : "—"}
+                        </td>
+                        <td style={sub}>
+                          {b.rev > 0 ? fmtP(b.invoiceRev / b.rev) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  </React.Fragment>
                 );
               })}
               {data.channels.length > 1 && (
@@ -1994,7 +2050,10 @@ function POSDashboard({
             </tbody>
           </table>
         </div>
-        {(s.noCostRev > 0 || s.testCount > 0 || s.cancelledTotal > 0) && (
+        {(s.noCostRev > 0 ||
+          s.testCount > 0 ||
+          s.cancelledTotal > 0 ||
+          retailSplitRows.length > 0) && (
           <div
             style={{
               marginTop: 12,
@@ -2003,6 +2062,11 @@ function POSDashboard({
               lineHeight: 1.7,
             }}
           >
+            {retailSplitRows.length > 0 && (
+              <div>
+                ※ 公版（老客）＝單裡有任何一項公版品項，仍算現場零售；沒商品明細或只打「茶葉」泛稱的單分不出來，算在一般零售
+              </div>
+            )}
             {s.noCostRev > 0 && (
               <div>
                 ※ {fmt$(s.noCostRev)}{" "}
@@ -7558,32 +7622,65 @@ function ProfitCenter() {
       lossCount: 0,
       cancelledAll: 0,
     };
+    const mkBucket = (key, label) => ({
+      key,
+      label,
+      rev: 0,
+      cost: 0,
+      gp: 0,
+      net: 0,
+      op: 0,
+      tax: 0,
+      orders: 0,
+      noCostRev: 0,
+      noCostCount: 0,
+      estRev: 0,
+      estCost: 0,
+      estCount: 0,
+      invoiceRev: 0,
+      coveredRev: 0,
+      coveredGp: 0,
+      coveredNet: 0,
+      coveredOp: 0,
+      coveredTax: 0,
+      lossCount: 0,
+    });
+    const addBucket = (ch, fin, order) => {
+      ch.rev += fin.gross;
+      ch.cost += fin.oCost;
+      ch.gp += fin.gp;
+      ch.net += fin.finalNet;
+      ch.op += fin.opAmt;
+      ch.tax += fin.txAmt;
+      ch.orders++;
+      if (fin.missCost) {
+        ch.noCostRev += fin.gross;
+        ch.noCostCount++;
+      } else {
+        ch.coveredRev += fin.gross;
+        ch.coveredGp += fin.gp;
+        ch.coveredNet += fin.finalNet;
+        ch.coveredOp += fin.opAmt;
+        ch.coveredTax += fin.txAmt;
+        if (fin.finalNet < 0) ch.lossCount++;
+        /* 這筆的成本含估算（走成本率）——毛利率/淨利率會受影響，畫面要標明 */
+        if (fin.hasEst) {
+          ch.estRev += fin.gross;
+          ch.estCost += fin.estCost;
+          ch.estCount++;
+        }
+      }
+      if (order.hasInvoice) ch.invoiceRev += fin.gross;
+    };
     const byChannel = {};
     POS_CHANNELS.forEach((c) => {
-      byChannel[c.key] = {
-        key: c.key,
-        label: c.label,
-        rev: 0,
-        cost: 0,
-        gp: 0,
-        net: 0,
-        op: 0,
-        tax: 0,
-        orders: 0,
-        noCostRev: 0,
-        noCostCount: 0,
-        estRev: 0,
-        estCost: 0,
-        estCount: 0,
-        invoiceRev: 0,
-        coveredRev: 0,
-        coveredGp: 0,
-        coveredNet: 0,
-        coveredOp: 0,
-        coveredTax: 0,
-        lossCount: 0,
-      };
+      byChannel[c.key] = mkBucket(c.key, c.label);
     });
+    /* 現場零售再拆兩桶（posIsGongbanOrder）：只給通路拆解表看，不進合計、不影響計入 */
+    const retailSplit = {
+      gongban: mkBucket("retail_gongban", "公版（老客）"),
+      plain: mkBucket("retail_plain", "一般零售"),
+    };
     const mm = {};
     /* 未計入通路賣出的品項：商品表不收（KPI 口徑），但成本資料庫要看得到、未填成本要算得到——
        鎖定會把這些單一起凍結，以前它們沒成本時提醒與確認框都說「0 項未填」（F15） */
@@ -7610,31 +7707,13 @@ function ProfitCenter() {
       }
       const ch = byChannel[order.channel] || byChannel.retail;
       /* 通路層一律照算（表上看得到）；總計 KPI／商品表只加未被排除的通路 */
-      ch.rev += fin.gross;
-      ch.cost += fin.oCost;
-      ch.gp += fin.gp;
-      ch.net += fin.finalNet;
-      ch.op += fin.opAmt;
-      ch.tax += fin.txAmt;
-      ch.orders++;
-      if (fin.missCost) {
-        ch.noCostRev += fin.gross;
-        ch.noCostCount++;
-      } else {
-        ch.coveredRev += fin.gross;
-        ch.coveredGp += fin.gp;
-        ch.coveredNet += fin.finalNet;
-        ch.coveredOp += fin.opAmt;
-        ch.coveredTax += fin.txAmt;
-        if (fin.finalNet < 0) ch.lossCount++;
-        /* 這筆的成本含估算（走成本率）——毛利率/淨利率會受影響，畫面要標明 */
-        if (fin.hasEst) {
-          ch.estRev += fin.gross;
-          ch.estCost += fin.estCost;
-          ch.estCount++;
-        }
-      }
-      if (order.hasInvoice) ch.invoiceRev += fin.gross;
+      addBucket(ch, fin, order);
+      if (ch.key === "retail")
+        addBucket(
+          posIsGongbanOrder(order) ? retailSplit.gongban : retailSplit.plain,
+          fin,
+          order
+        );
       /* 訂單明細表列出「所有」有效訂單（含未計入 KPI 的通路，畫面上會灰掉標示）——
          逐筆檢視經銷單賺不賺正是這張表的用途；KPI／商品表才受計入清單限制 */
       ol.push({
@@ -7750,6 +7829,7 @@ function ProfitCenter() {
       channels: POS_CHANNELS.map((c) => byChannel[c.key])
         .filter((c) => c.rev > 0 || c.orders > 0)
         .map((c) => ({ ...c, excluded: !posIncluded.includes(c.key) })),
+      retailSplit,
       /* 總覽用：六個通路一律列出（沒單的也給 0 列），且不受「計入清單」影響 */
       channelsAll: POS_CHANNELS.map((c) => ({
         ...byChannel[c.key],
@@ -12483,26 +12563,26 @@ function ProfitCenter() {
                               : "注意：接近警戒線 2.5%",
                         },
                         {
-                          /* 階梯制（2026-07-08 雙平台淨利管理基準）：
-                             50 優異／49.2 達標線／48 觀察／47 調整線／介入線 */
+                          /* 2026-10-08 老闆選 B：由商品毛利帶 65–68（警戒 63）減實測通路費 17.5% 推導——
+                             50.5 優異／47.5 達標線／45.5–47.5 觀察／45.5 介入線（原 07-08 的 50／49.2／48／47
+                             是從規劃口徑稅後 13% 倒推，商品毛利在 65–68 帶內也到不了，1–9 月 0/9 達標）。
+                             比較前先四捨五入到畫面精度（roundRate），避免 47.50% 顯示卻判未達標 */
                           l: "通路後毛利率",
                           v: fmtP(spS.grossMargin),
                           c:
-                            spS.grossMargin >= 0.492
+                            roundRate(spS.grossMargin) >= 0.475
                               ? "var(--up)"
-                              : spS.grossMargin >= 0.48
+                              : roundRate(spS.grossMargin) >= 0.455
                               ? "var(--wn)"
                               : "var(--dn)",
                           note:
-                            spS.grossMargin >= 0.5
-                              ? "✓ 超越 50%，表現優異"
-                              : spS.grossMargin >= 0.492
-                              ? "✓ 達標，達標線 49.2%"
-                              : spS.grossMargin >= 0.48
-                              ? "⚠ 觀察帶，追蹤商品組合與讓利深度"
-                              : spS.grossMargin >= 0.47
-                              ? "⚠ 低於調整線 48%：調商品結構，原則不漲價"
-                              : "⚠ 低於介入線 47%：立即檢視平台費用與優惠券",
+                            roundRate(spS.grossMargin) >= 0.505
+                              ? "✓ 超越 50.5%，表現優異"
+                              : roundRate(spS.grossMargin) >= 0.475
+                              ? "✓ 達標，達標線 47.5%（商品毛利 65% − 通路費 17.5%）"
+                              : roundRate(spS.grossMargin) >= 0.455
+                              ? "⚠ 觀察帶 45.5–47.5%：連 2 個月啟動檢討，先調商品結構、原則不漲價"
+                              : "⚠ 低於介入線 45.5%：立即檢視平台費用與優惠券",
                         },
                       ].map((k, i) => (
                         <div
