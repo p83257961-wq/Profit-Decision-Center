@@ -126,6 +126,15 @@ const posEffectiveOrders = (orders) => {
 const POS_RETAIL_PAY_KNOWN = /現金|信用卡|LINE\s*Pay|轉帳|ATM|宅配|超商|貨到付款/i;
 /* 測試單門檻：金額 ≤ 此值視為測試（LINE Pay 1 元那類），預設排除計算 */
 const POS_TEST_MAX = 10;
+/* 門市刷卡手續費（老闆 2026-11-01「門市刷卡 2.0%」＝SHOPLINE Payments「POS 信用卡（線下刷卡機）」
+   國內外都 2.0%，2026-06-25 起）。付款方式含「信用卡」的單照營收扣，其他付款方式不扣。
+   交易明細只存最後一列的付款方式；10 月刷卡 14 張全是單筆交易、整單刷卡，沒有混合付款 */
+const POS_CARD_FEE = { from: "2026-06-25", rate: 0.02 };
+const posPayFeeRate = (payMethod, date) =>
+  String(payMethod || "").includes("信用卡") &&
+  String(date || "") >= POS_CARD_FEE.from
+    ? POS_CARD_FEE.rate
+    : 0;
 /* 門市發票判定（老闆 2026-08-18）：POS 只對電子支付自動帶發票號碼；企業客戶常走 SHOPLINE
    線上「新增獨立發票」自訂品名，POS 匯出裡沒有號碼——所以再看備註／統編／通路：
    ① 有發票號碼 ② 交易明細填了統編 ③ 備註寫到「發票／公司戶／統編／三聯／二聯」
@@ -158,20 +167,38 @@ const groupOrdersByMonth = (orders) => {
 };
 
 /* ─── Constants ────────────────────────────────────────────────── */
+/* 官網金流費率（2026-11-01 照老闆貼的 SHOPLINE Payments 後台「查看費率」）。
+   每種付款方式是一張分段表，取訂單日期當時生效的那一段（from 起含當天；沒寫 from＝最早那段）。
+   intl＝國外卡費率：匯出報表沒有發卡國家，用「海外配送」代理（2026 鏡像實測信用卡＋Apple Pay：
+   海外配送 181/199 張是外國卡、國內配送 1,144/1,203 張是台灣卡）。
+   - 信用卡 0 期：國內 2.0%／國外 3.5% 自 2026-06-25 生效；之前後台沒列，維持原本的 2.2%
+   - 分期：報表沒有期數（3 期 2.4%、6 期 3.7%），用 2026 實際組合加權 2.93%
+     （3 期 21 張 105,461／6 期 17 張 71,775）
+   - LINE Pay：2026-03-31 起改走 SHOPLINE Payments 2.625%；之前是 LINE Pay 直連，維持原本的 2.3%
+   - 街口 2.5%、Apple Pay 國內 2.2%／國外 3.5%、ATM 1%：2026-01-01 起
+   比對照物件順序，「信用卡分期」要排在「信用卡」前面 */
 const SL_PAYMENT_RATES = {
-  信用卡: { rate: 0.022, flat: 0 },
-  "LINE Pay": { rate: 0.023, flat: 0 },
-  "7-11": { rate: 0, flat: 0 },
-  全家: { rate: 0, flat: 0 },
-  "宅配（貨到付款）": { rate: 0.01, flat: 0 },
-  ApplePay: { rate: 0.022, flat: 0 },
-  "Apple Pay": { rate: 0.022, flat: 0 },
-  銀行轉帳: { rate: 0.01, flat: 0 },
-  ATM: { rate: 0.01, flat: 0 },
-  PayPal: { rate: 0.044, flat: 10 },
-  WeChat: { rate: 0.0275, flat: 0 },
+  信用卡分期: [{ rate: 0.0293, flat: 0 }],
+  信用卡: [
+    { rate: 0.022, flat: 0 },
+    { from: "2026-06-25", rate: 0.02, intl: 0.035, flat: 0 },
+  ],
+  "LINE Pay": [
+    { rate: 0.023, flat: 0 },
+    { from: "2026-03-31", rate: 0.02625, flat: 0 },
+  ],
+  街口: [{ rate: 0.025, flat: 0 }],
+  "7-11": [{ rate: 0, flat: 0 }],
+  全家: [{ rate: 0, flat: 0 }],
+  "宅配（貨到付款）": [{ rate: 0.01, flat: 0 }],
+  ApplePay: [{ rate: 0.022, intl: 0.035, flat: 0 }],
+  "Apple Pay": [{ rate: 0.022, intl: 0.035, flat: 0 }],
+  銀行轉帳: [{ rate: 0.01, flat: 0 }],
+  ATM: [{ rate: 0.01, flat: 0 }],
+  PayPal: [{ rate: 0.044, flat: 10 }],
+  WeChat: [{ rate: 0.0275, flat: 0 }],
   /* 官網報表裡的 POS 單（付款方式「實體商店」）：零金流費 */
-  實體商店: { rate: 0, flat: 0 },
+  實體商店: [{ rate: 0, flat: 0 }],
 };
 const SL_SHIPPING_RATES = {
   "7-11": 65,
@@ -209,9 +236,24 @@ const slShipRate = (dlv) => {
     if (d.includes(k.toUpperCase())) return v;
   return null;
 };
-const slPayRate = (pay) => {
+/* 國外卡代理：國際單＋順豐（官網的順豐三個選項都寄海外：港澳／中國／新加坡） */
+const slOverseas = (dlv) =>
+  slIntl(dlv) || /順豐|SF-EXPRESS/i.test(String(dlv || ""));
+/* 回傳 { rate, flat }；比不到回 null。沒給日期＝用最新一段 */
+const slPayRate = (pay, date, overseas) => {
   const p = String(pay || "");
-  for (const [k, v] of Object.entries(SL_PAYMENT_RATES)) if (p.includes(k)) return v;
+  const d = String(date || "");
+  for (const [k, segs] of Object.entries(SL_PAYMENT_RATES)) {
+    if (!p.includes(k)) continue;
+    let seg = segs[0];
+    segs.forEach((s) => {
+      if (!s.from || !d || d >= s.from) seg = s;
+    });
+    return {
+      rate: overseas && seg.intl != null ? seg.intl : seg.rate,
+      flat: seg.flat || 0,
+    };
+  }
   return null;
 };
 
@@ -1301,6 +1343,8 @@ const POS_CH_SUM_KEYS = [
   "coveredNet",
   "coveredOp",
   "coveredTax",
+  "payFee",
+  "coveredPayFee",
   "lossCount",
 ];
 const sumPosChannels = (list) =>
@@ -1467,6 +1511,7 @@ function POSDashboard({
       ["成本齊全訂單營收", r0(s.coveredRev)],
       ["商品成本（成本齊全單）", r0(s.coveredRev - s.coveredGp)],
       ["毛利（成本齊全單）", r0(s.coveredGp)],
+      ["刷卡手續費（成本齊全單）", r0(s.coveredPayFee)],
       ["營業費（成本齊全單）", r0(s.coveredOp)],
       ["稅賦（成本齊全單・只課開票）", r0(s.coveredTax)],
       ["最終淨利（成本齊全單）", r0(s.coveredNet)],
@@ -1496,6 +1541,7 @@ function POSDashboard({
       "營收",
       "商品成本",
       "毛利",
+      "刷卡手續費",
       "營業費",
       "稅賦",
       "單筆淨利",
@@ -1513,6 +1559,7 @@ function POSDashboard({
         r0(o.revenue),
         o.missCost ? "缺" : r0(o.oCost),
         o.missCost ? "" : r0(o.gp),
+        r0(o.payFee || 0),
         r0(o.opx),
         r0(o.taxAmt),
         o.missCost ? "" : r0(o.net),
@@ -1735,10 +1782,17 @@ function POSDashboard({
           >
             {[
               { l: "毛利（無平台抽成）", v: s.coveredGp, c: "var(--t1)" },
+              s.coveredPayFee > 0 && {
+                l: "刷卡手續費",
+                v: -s.coveredPayFee,
+                c: "var(--dn)",
+              },
               { l: "營業費", v: -s.coveredOp, c: "var(--dn)" },
               { l: "稅賦（開票單）", v: -s.coveredTax, c: "var(--dn)" },
               { l: "淨利", v: s.coveredNet, c: accentColor, bold: true },
-            ].map((item, i, arr) => (
+            ]
+              .filter(Boolean)
+              .map((item, i, arr) => (
               <React.Fragment key={i}>
                 <div
                   style={{
@@ -4787,7 +4841,11 @@ const slOrderFin = (order, fp, costsMap) => {
   const oer = fpPct(ofp, fp, "opExpense") / 100;
   const dtr = fpPct(ofp, fp, "tax") / 100;
   /* 金流／物流：查表命中才用表值；比不到不再無聲套預設——回傳 payKnown/dlvKnown 讓明細標 ⚠ */
-  const prHit = slPayRate(order.paymentMethod);
+  const prHit = slPayRate(
+    order.paymentMethod,
+    order.date,
+    slOverseas(order.deliveryMethod)
+  );
   const payKnown = prHit !== null;
   const pr = prHit || { rate: 0.022, flat: 0 };
   const pf = order.revenue * pr.rate + pr.flat;
@@ -4969,6 +5027,7 @@ const posOrderFin = (order, fp, costsMap, ratios) => {
     oCost += unit * (item.qty || 1);
   });
   const gp = gross - oCost;
+  const payFee = gross * posPayFeeRate(order.payMethod, order.date);
   const opAmt = gross * (opEx / 100);
   const txAmt = order.hasInvoice ? gross * (tx / 100) : 0;
   return {
@@ -4979,10 +5038,11 @@ const posOrderFin = (order, fp, costsMap, ratios) => {
     estCost: est,
     hasEst: est > 0,
     gp,
+    payFee,
     opAmt,
     txAmt,
     missCost,
-    finalNet: gp - opAmt - txAmt,
+    finalNet: gp - payFee - opAmt - txAmt,
     opEx,
     tx,
   };
@@ -5560,11 +5620,17 @@ function POSOrderDetail({
     lineSum > 0
       ? Math.max(0, lineSum - order.revenue - (Number(order.refundAmt) || 0))
       : 0;
-  const lines = order.missCost
+  const feeLine = order.payFee > 0 && {
+    l: `刷卡手續費（${(POS_CARD_FEE.rate * 100).toFixed(1)}%）`,
+    v: -order.payFee,
+    neg: true,
+  };
+  const lines = (order.missCost
     ? [
         { l: "訂單營收", v: order.revenue },
         { l: "商品成本", v: null, neg: true, note: items.length ? "未填" : "無明細" },
         { l: "毛利（無平台抽成）", v: null, sub: true, note: "—" },
+        feeLine,
         { l: "內部營業費", v: -order.opx, neg: true },
         {
           l: order.hasInvoice ? "稅賦（已開票）" : "稅賦（未開票免課）",
@@ -5577,6 +5643,7 @@ function POSOrderDetail({
         { l: "訂單營收", v: order.revenue },
         { l: "商品成本", v: -order.oCost, neg: true },
         { l: "毛利（無平台抽成）", v: order.gp, sub: true },
+        feeLine,
         { l: "內部營業費", v: -order.opx, neg: true },
         {
           l: order.hasInvoice ? "稅賦（已開票）" : "稅賦（未開票免課）",
@@ -5584,7 +5651,8 @@ function POSOrderDetail({
           neg: true,
         },
         { l: "最終淨利", v: order.net, bold: true },
-      ];
+      ]
+  ).filter(Boolean);
   const metaBits = [
     order.status && `狀態：${order.status}`,
     order.payMethod && `付款：${order.payMethod}`,
@@ -7636,6 +7704,8 @@ function ProfitCenter() {
       coveredNet: 0,
       coveredOp: 0,
       coveredTax: 0,
+      payFeeTotal: 0,
+      coveredPayFee: 0,
       lossCount: 0,
       cancelledAll: 0,
     };
@@ -7648,6 +7718,8 @@ function ProfitCenter() {
       net: 0,
       op: 0,
       tax: 0,
+      payFee: 0,
+      coveredPayFee: 0,
       orders: 0,
       noCostRev: 0,
       noCostCount: 0,
@@ -7669,6 +7741,7 @@ function ProfitCenter() {
       ch.net += fin.finalNet;
       ch.op += fin.opAmt;
       ch.tax += fin.txAmt;
+      ch.payFee += fin.payFee;
       ch.orders++;
       if (fin.missCost) {
         ch.noCostRev += fin.gross;
@@ -7679,6 +7752,7 @@ function ProfitCenter() {
         ch.coveredNet += fin.finalNet;
         ch.coveredOp += fin.opAmt;
         ch.coveredTax += fin.txAmt;
+        ch.coveredPayFee += fin.payFee;
         if (fin.finalNet < 0) ch.lossCount++;
         /* 這筆的成本含估算（走成本率）——毛利率/淨利率會受影響，畫面要標明 */
         if (fin.hasEst) {
@@ -7739,6 +7813,7 @@ function ProfitCenter() {
         ...order,
         oCost: fin.oCost,
         gp: fin.gp,
+        payFee: fin.payFee,
         opx: fin.opAmt,
         taxAmt: fin.txAmt,
         net: fin.finalNet,
@@ -7818,6 +7893,7 @@ function ProfitCenter() {
       t.net += fin.finalNet;
       t.opExpTotal += fin.opAmt;
       t.taxTotal += fin.txAmt;
+      t.payFeeTotal += fin.payFee;
       t.valid++;
       if (fin.missCost) {
         t.noCostRev += fin.gross;
@@ -7829,6 +7905,7 @@ function ProfitCenter() {
         t.coveredNet += fin.finalNet;
         t.coveredOp += fin.opAmt;
         t.coveredTax += fin.txAmt;
+        t.coveredPayFee += fin.payFee;
         if (fin.finalNet < 0) t.lossCount++;
         if (fin.hasEst) {
           t.estRev += fin.gross;
