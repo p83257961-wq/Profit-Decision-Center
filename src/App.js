@@ -360,6 +360,29 @@ const gl = (k, f) => {
     return f;
   }
 };
+/* 訂單本機快取保留的月數（含本月）：只影響開頁那一下先畫出來的內容，雲端到齊後就是全量 */
+const CACHE_MONTHS = 6;
+const recentOrdersForCache = (orders, now = new Date()) => {
+  const d = new Date(now.getFullYear(), now.getMonth() - (CACHE_MONTHS - 1), 1);
+  const cut = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const out = {};
+  Object.entries(orders || {}).forEach(([k, o]) => {
+    if (String(o?.date || "").slice(0, 7) >= cut) out[k] = o;
+  });
+  return out;
+};
+/* 自訂區間剛好是一個會計年度（4/1～翌年 3/31）就回傳起始年，選單顯示 FY 而不是「自訂區間」 */
+const fyOfRange = (range) => {
+  const m = /^(\d{4})-04-01$/.exec(range?.from || "");
+  return m && range?.to === `${Number(m[1]) + 1}-03-31` ? Number(m[1]) : null;
+};
+/* 區間是不是整月（1 號起、月底止）：整月才能用月度淨利畫趨勢線 */
+const isWholeMonthRange = (range) => {
+  const f = /^(\d{4})-(\d{2})-01$/.exec(range?.from || "");
+  const t = /^(\d{4})-(\d{2})-(\d{2})$/.exec(range?.to || "");
+  if (!f || !t) return false;
+  return Number(t[3]) === new Date(Number(t[1]), Number(t[2]), 0).getDate();
+};
 /* 寫不進去（容量滿）就把舊值一併移除：寧可沒有本機快取（開頁等雲端），
    也不要留一份過期的舊版在開頁時先被畫出來（2026-09-23 盤查 F33，約 12 月會滿） */
 const sl_s = (k, v) => {
@@ -664,10 +687,22 @@ const CSS = `
 .f4{animation:fadeUp .42s cubic-bezier(.16,1,.3,1) .24s both;}
 .f5{animation:fadeUp .42s cubic-bezier(.16,1,.3,1) .30s both;}
 .gm{display:grid;grid-template-columns:240px 1fr;gap:20px;align-items:start;}
-.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
-.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+/* minmax(0,1fr)：卡片不被長數字撐寬（1fr 的下限是內容寬，1024 寬時蝦皮卡會超出畫面 11px，
+   2026-11-03 稽核）。統計卡數字隨視窗縮字，四欄改兩欄的斷點 1000→1100 */
+.g4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
+.kpi-num{font-size:clamp(20px,2.3vw,30px)!important;white-space:nowrap;}
+.kpi-num-md{font-size:clamp(18px,2vw,26px)!important;white-space:nowrap;}
 @media(max-width:900px){.gm{grid-template-columns:1fr;}.side-sticky{position:static!important;}}
-@media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr);}.g3{grid-template-columns:repeat(2,1fr);}}
+@media(max-width:1100px){.g4{grid-template-columns:repeat(2,minmax(0,1fr));}.g3{grid-template-columns:repeat(2,minmax(0,1fr));}}
+/* 1024 左右的視窗：訂單表先收掉次要欄，淨利不用右滑才看得到 */
+@media(min-width:601px) and (max-width:1200px){
+  .tb-ord th:nth-child(4),.tb-ord td:nth-child(4),.tb-ord th:nth-child(6),.tb-ord td:nth-child(6){display:none;}
+  .tb-ord-sl th:nth-child(3),.tb-ord-sl td:nth-child(3),.tb-ord-sl th:nth-child(4),.tb-ord-sl td:nth-child(4){display:none;}
+  .tb-ord-sp th:nth-child(4),.tb-ord-sp td:nth-child(4),.tb-ord-sp th:nth-child(5),.tb-ord-sp td:nth-child(5){display:none;}
+  .tb-ord,.tb-ord-sl,.tb-ord-sp{min-width:0!important;}
+  .tb-ord th:nth-child(3),.tb-ord td:nth-child(3){width:150px!important;max-width:150px!important;}
+}
 @media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}.app-header{position:static!important;}}
 .gcmp{display:grid;grid-template-columns:1fr 1px 1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
 .gcmp-c{padding:0 16px;min-width:0;}
@@ -760,13 +795,24 @@ select:focus-visible,button:focus-visible,[role=button]:focus-visible,input[type
   .tb-cost{min-width:0!important;}
   .tb-cost th,.tb-cost td{padding-left:6px!important;padding-right:6px!important;}
   .tb-cost th:nth-child(3),.tb-cost td:nth-child(3),.tb-cost th:nth-child(4),.tb-cost td:nth-child(4),.tb-cost th:nth-child(5),.tb-cost td:nth-child(5){display:none;}
+  /* 品名、規格允許換行：長品名原本把單位成本擠到畫面外（2026-11-03 稽核） */
+  .tb-cost td:nth-child(1),.tb-cost td:nth-child(2){white-space:normal!important;min-width:0!important;max-width:none!important;word-break:break-word;}
+  .tb-cost td:nth-child(1)>div,.tb-cost td:nth-child(2)>div{white-space:normal!important;}
+  /* 訂單表手機只留 單號／通路／營收／淨利：商品欄 200px 原本把營收、淨利推到畫面外；
+     商品、發票點開單號看得到（明細的稅賦行寫已開票／未開票）（2026-11-03 稽核） */
   .tb-ord{min-width:0!important;}
   .ord-warn-m{display:inline!important;}
-  .tb-ord th:nth-child(4),.tb-ord td:nth-child(4),.tb-ord th:nth-child(6),.tb-ord td:nth-child(6),.tb-ord th:nth-child(7),.tb-ord td:nth-child(7){display:none;}
+  .tb-ord th:nth-child(3),.tb-ord td:nth-child(3),.tb-ord th:nth-child(4),.tb-ord td:nth-child(4),.tb-ord th:nth-child(6),.tb-ord td:nth-child(6),.tb-ord th:nth-child(7),.tb-ord td:nth-child(7),.tb-ord th:nth-child(9),.tb-ord td:nth-child(9){display:none;}
+  .tb-ord td:nth-child(2){min-width:68px;}
   .tb-ord-sl{min-width:0!important;}
   .tb-ord-sl th:nth-child(3),.tb-ord-sl td:nth-child(3),.tb-ord-sl th:nth-child(4),.tb-ord-sl td:nth-child(4),.tb-ord-sl th:nth-child(5),.tb-ord-sl td:nth-child(5){display:none;}
   .tb-ord-sp{min-width:0!important;}
-  .tb-ord-sp th:nth-child(4),.tb-ord-sp td:nth-child(4),.tb-ord-sp th:nth-child(5),.tb-ord-sp td:nth-child(5),.tb-ord-sp th:nth-child(6),.tb-ord-sp td:nth-child(6){display:none;}
+  .tb-ord-sp th:nth-child(2),.tb-ord-sp td:nth-child(2),.tb-ord-sp th:nth-child(4),.tb-ord-sp td:nth-child(4),.tb-ord-sp th:nth-child(5),.tb-ord-sp td:nth-child(5),.tb-ord-sp th:nth-child(6),.tb-ord-sp td:nth-child(6){display:none;}
+  /* 損益分解：一列兩格、拿掉箭頭、數字縮一級——三格一列時金額會互相壓字（官網 10 月
+     「−$317,037−$40,344」黏在一起，年度更長，2026-11-03 稽核） */
+  .wf-cell{flex:1 1 40%!important;min-width:0!important;margin-bottom:10px;}
+  .wf-arr{display:none!important;}
+  .wf-num{font-size:17px!important;}
 }
 `;
 
@@ -1038,7 +1084,14 @@ const CostInput = React.memo(function CostInput({
       onBlur={() => {
         focused.current = false;
         const n = parseFloat(draft);
-        onCommit(costKey, Number.isFinite(n) ? n : 0);
+        /* 負數＝誤按，退回原值；呼叫端回 false＝被拒（雲端未就緒等），也退回——
+           以前框裡留著沒存進去的數字，看起來像已存檔（2026-11-03 稽核，比照 FpInput） */
+        if (Number.isFinite(n) && n < 0) {
+          setDraft(norm(value));
+          return;
+        }
+        if (onCommit(costKey, Number.isFinite(n) ? n : 0) === false)
+          setDraft(norm(value));
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur();
@@ -1171,7 +1224,7 @@ const CompPicker = React.memo(function CompPicker({ compGroups, onPick }) {
             <div key={cat}>
               <div
                 style={{
-                  fontSize: 9,
+                  fontSize: 10,
                   fontWeight: 800,
                   color: "var(--accent-text)",
                   padding: "6px 8px 2px",
@@ -1261,6 +1314,7 @@ const PosKpi = ({ label, value, sub, color }) => (
   >
     <Lbl>{label}</Lbl>
     <div
+      className="kpi-num"
       style={{
         fontSize: 30,
         fontWeight: 700,
@@ -1280,7 +1334,13 @@ const PosKpi = ({ label, value, sub, color }) => (
 /* 門市統一淨利目標（六通路一個數字，2026-08-25 老闆拍板 12%）：
    側欄可調（slFp.posTargetNet），此常數只是無存值時的後備 */
 const POS_TARGET_DEFAULT = 0.12;
-const posTargetOf = (fp) => (parseFloat(fp?.posTargetNet) || 12) / 100;
+/* 目標值解析：只有空值／非數字才退預設；填 0 就是 0（以前 `|| 預設` 把 0 吃掉，
+   側欄顯示 0、Hero 卻用 15，2026-11-03 稽核） */
+const pctOr = (v, d) => {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : d;
+};
+const posTargetOf = (fp) => pctOr(fp?.posTargetNet, 12) / 100;
 /* 門市三個指標的色彩門檻——Hero／KPI／通路拆解／總覽六通路表一律呼叫這三支，
    不各自寫死數字（2026-08-18 審查：三處門檻不一致導致同頁自相矛盾） */
 /* 比率先四捨五入到畫面精度（百分比兩位小數）再跟目標比：畫面寫 12.00% 就該算達標，
@@ -1290,10 +1350,14 @@ const posNetColor = (nm, target = POS_TARGET_DEFAULT) => {
   const r = roundRate(nm);
   return r >= target ? "var(--up)" : r >= 0.05 ? "var(--wn)" : "var(--dn)";
 };
-const posGmColor = (gm) =>
-  gm >= 0.45 ? "var(--up)" : gm >= 0.35 ? "var(--wn)" : "var(--dn)";
-const posCovColor = (cov) =>
-  cov >= 0.9 ? "var(--up)" : cov >= 0.6 ? "var(--wn)" : "var(--dn)";
+const posGmColor = (gm) => {
+  const r = roundRate(gm);
+  return r >= 0.45 ? "var(--up)" : r >= 0.35 ? "var(--wn)" : "var(--dn)";
+};
+const posCovColor = (cov) => {
+  const r = roundRate(cov);
+  return r >= 0.9 ? "var(--up)" : r >= 0.6 ? "var(--wn)" : "var(--dn)";
+};
 /* 營業費率分級（總覽大磚與三平台卡共用）：0 在目標內／1 FY2026 可接受帶／
    2 活動月加碼帶／3 需檢討。先四捨五入到顯示精度（百分比兩位）再比，
    否則 35.00% 會因浮點誤差 0.35000000000000003 被判成超標 */
@@ -1409,7 +1473,7 @@ function POSDashboard({
     ? "六通路"
     : POS_CHANNELS.filter((c) => included.includes(c.key))
         .map((c) => c.label)
-        .join("＋") || "（未計入任何通路）";
+        .join("＋") || "未計入任何通路";
   const netColor = posNetColor(s.netMargin, posTarget);
   const covColor = posCovColor(s.costCoverage);
   const cth = {
@@ -1543,7 +1607,7 @@ function POSDashboard({
       "刷卡手續費",
       "營業費",
       "稅賦",
-      "單筆淨利",
+      "最終淨利",
       "發票",
       "商品",
     ]);
@@ -1609,9 +1673,26 @@ function POSDashboard({
             marginBottom: 16,
           }}
         >
-          <Tag v={s.coveredRev > 0 ? (gapVal >= 0 ? "ok" : "bad") : "default"}>
+          {/* 標籤跟淨利率數字同一套三段色（posNetColor）：黃段叫「未達標」，紅段才是「警告」 */}
+          <Tag
+            v={
+              s.coveredRev > 0
+                ? gapVal >= 0
+                  ? "ok"
+                  : roundRate(s.netMargin) >= 0.05
+                  ? "warn"
+                  : "bad"
+                : "default"
+            }
+          >
             <Zap size={10} />{" "}
-            {s.coveredRev > 0 ? (gapVal >= 0 ? "穩健" : "警告") : "無資料"}
+            {s.coveredRev > 0
+              ? gapVal >= 0
+                ? "穩健"
+                : roundRate(s.netMargin) >= 0.05
+                ? "未達標"
+                : "警告"
+              : "無資料"}
           </Tag>
           {/* 不 disable：三平台一致由 toggleSnap 用 toast 說明為什麼不能鎖，
               disabled 按鈕無法聚焦，鍵盤／手機使用者會看不到任何原因 */}
@@ -1669,8 +1750,8 @@ function POSDashboard({
               }}
             >
               {gapVal >= 0
-                ? `✓ 淨利率 ${fmtP(s.netMargin)}，高於門市目標 ${(gapVal * 100).toFixed(2)}%`
-                : `⚠ 淨利率 ${fmtP(s.netMargin)}，距門市目標差 ${Math.abs(gapVal * 100).toFixed(2)}%`}
+                ? `✓ 淨利率 ${fmtP(s.netMargin)}，高於目標 +${(gapVal * 100).toFixed(2)}%`
+                : `⚠ 淨利率 ${fmtP(s.netMargin)}，距目標差 ${Math.abs(gapVal * 100).toFixed(2)}%`}
             </span>
           )}
         </div>
@@ -1794,6 +1875,7 @@ function POSDashboard({
               .map((item, i, arr) => (
               <React.Fragment key={i}>
                 <div
+                  className="wf-cell"
                   style={{
                     flex: "1 1 0",
                     minWidth: 90,
@@ -1812,6 +1894,7 @@ function POSDashboard({
                     {item.l}
                   </div>
                   <div
+                    className="wf-num"
                     style={{
                       fontSize: 20,
                       fontWeight: item.bold ? 800 : 600,
@@ -1825,6 +1908,7 @@ function POSDashboard({
                 </div>
                 {i < arr.length - 1 && (
                   <div
+                    className="wf-arr"
                     style={{
                       color: "var(--s4)",
                       fontSize: 18,
@@ -1980,7 +2064,7 @@ function POSDashboard({
                         <span
                           style={{
                             marginLeft: 6,
-                            fontSize: 9,
+                            fontSize: 10,
                             padding: "1px 5px",
                             borderRadius: 4,
                             border: `1px solid ${accentBdr}`,
@@ -2086,7 +2170,7 @@ function POSDashboard({
                   <td style={{ ...ctd, fontWeight: 700 }}>
                     {fmt$(chTotal.rev)}
                   </td>
-                  <td style={ctd}>100%</td>
+                  <td style={ctd}>{fmtP(1)}</td>
                   <td style={ctd}>{chTotal.orders}</td>
                   <td style={ctd}>
                     {chTotal.orders > 0
@@ -2118,10 +2202,9 @@ function POSDashboard({
             </tbody>
           </table>
         </div>
-        {(s.noCostRev > 0 ||
-          s.testCount > 0 ||
-          s.cancelledTotal > 0 ||
-          dealerSplitRows.length > 0) && (
+        {/* 公版改歸、算不出成本兩段註腳拿掉：前者「└ 公版（零售付款）」那列的 title 有、後者 Hero 標籤有
+            （同一件事講兩三次，2026-11-03 稽核） */}
+        {(s.testCount > 0 || s.cancelledTotal > 0) && (
           <div
             style={{
               marginTop: 12,
@@ -2130,17 +2213,6 @@ function POSDashboard({
               lineHeight: 1.7,
             }}
           >
-            {dealerSplitRows.length > 0 && (
-              <div>
-                ※ 有公版品項的單（付款是現金／刷卡／轉帳等）算經銷·老客價，不算現場零售——只勾現場零售時不計入 KPI；沒商品明細或只打「茶葉」泛稱的單分不出來，仍算現場零售
-              </div>
-            )}
-            {s.noCostRev > 0 && (
-              <div>
-                ※ {fmt$(s.noCostRev)}{" "}
-                營收的訂單算不出成本（品項未選正規如「茶葉」泛稱、或缺商品明細），已計入營收但排除在毛利計算外
-              </div>
-            )}
             {s.testCount > 0 && (
               <div>
                 ※ 已排除 {s.testCount} 筆測試單（≤{POS_TEST_MAX} 元，共{" "}
@@ -2595,6 +2667,7 @@ function POSDashboard({
 
 /* ─── Overview Dashboard ────────────────────────────────────── */
 function OverviewDashboard({
+  syncing,
   slData,
   spData,
   posData,
@@ -2715,7 +2788,7 @@ function OverviewDashboard({
       list.push({
         level: "info",
         platform: "官網",
-        msg: `本期有 ${slData.lossCount} 筆虧損訂單，建議檢視運費與折扣設定`,
+        msg: `本期有 ${slData.lossCount} 筆虧損訂單`,
       });
     if (spS && spS.lossN > 0)
       list.push({
@@ -2735,7 +2808,7 @@ function OverviewDashboard({
       list.push({
         level: "info",
         platform: "蝦皮",
-        msg: `本期排除 ${spS.refundN} 筆退貨/退款訂單（${fmt$(
+        msg: `本期排除 ${spS.refundN} 筆退貨／退款訂單（${fmt$(
           spS.refundG
         )} 未計入營收）`,
       });
@@ -2783,17 +2856,18 @@ function OverviewDashboard({
     if (posS && posS.noCostCount > 0)
       list.push({
         level: posS.coverage < 0.6 ? "error" : "warn",
-        platform: "門市",
+        /* posS 是六通路合計，不是「門市（現場零售）」那張卡（2026-11-03 稽核） */
+        platform: "門市六通路",
         msg: `${posS.noCostCount} 筆（${fmt$(
           posS.noCostRev
-        )}）算不出成本：品項未選正規或缺商品明細——這部分只計營收、不計淨利，成本覆蓋率 ${fmtP(
+        )}）算不出成本：品項是「茶葉」等泛稱或缺明細——只計營收、不計淨利，成本覆蓋率 ${fmtP(
           posS.coverage
         )}`,
       });
     if (posS && posS.lossCount > 0)
       list.push({
         level: "info",
-        platform: "門市",
+        platform: "門市六通路",
         msg: `本期有 ${posS.lossCount} 筆虧損訂單`,
       });
     {
@@ -3017,7 +3091,11 @@ function OverviewDashboard({
         posOtherRev: d.posOtherRev || 0,
         label: d.month.substring(2).replace("-", "/"),
         total: d.slRev + d.spRev + (d.posRev || 0) + (d.posOtherRev || 0),
-        net: sY === "Custom" ? undefined : allMonthly?.[d.month]?.net,
+        /* 自訂區間不是整月才藏淨利線（FY＝整月照畫，2026-11-03 稽核） */
+        net:
+          sY === "Custom" && !isWholeMonthRange(range)
+            ? undefined
+            : allMonthly?.[d.month]?.net,
       }));
   }, [slOrders, spOrders, posOrders, sY, range, allMonthly]);
   const showNetLine = trendData.some((d) => d.net !== undefined);
@@ -3064,11 +3142,14 @@ function OverviewDashboard({
       >
         <BarChart3 size={40} color="var(--s4)" />
         <div style={{ fontSize: 15, fontWeight: 700, color: "var(--t3)" }}>
-          尚無任何資料
+          {/* 雲端還在下載時不是「沒資料」，不要叫人上傳（2026-11-03 稽核） */}
+          {syncing ? "雲端資料載入中…" : "尚無任何資料"}
         </div>
-        <div style={{ fontSize: 12, color: "var(--t4)" }}>
-          請先上傳官網、蝦皮或門市報表
-        </div>
+        {!syncing && (
+          <div style={{ fontSize: 12, color: "var(--t4)" }}>
+            請先上傳官網、蝦皮或門市報表
+          </div>
+        )}
       </div>
     );
   }
@@ -3081,9 +3162,9 @@ function OverviewDashboard({
   const overallStatus =
     totalRev === 0
       ? { label: "尚無資料", c: "var(--t4)", bg: "var(--s2)", bd: "var(--s3)" }
-      : totalNetMargin >= OVERALL_TARGET
+      : roundRate(totalNetMargin) >= OVERALL_TARGET
       ? { label: "整體健康", c: "var(--up)", bg: "var(--up-dim)", bd: "var(--up-bdr)" }
-      : totalNetMargin >= OVERALL_RED
+      : roundRate(totalNetMargin) >= OVERALL_RED
       ? { label: "成長油門帶", c: "var(--wn)", bg: "var(--wn-dim)", bd: "var(--wn-bdr)" }
       : totalNetMargin > 0
       ? { label: "跌破紅線 10%", c: "var(--dn)", bg: "var(--dn-dim)", bd: "var(--dn-bdr)" }
@@ -3159,7 +3240,7 @@ function OverviewDashboard({
               lineHeight: 1.6,
             }}
           >
-            此期間三個通路都沒有有效訂單，下方數字全為
+            此期間三個平台都沒有有效訂單，下方數字全為
             0——請先確認期間選擇是否正確、該期間報表是否已匯入。
           </div>
         </div>
@@ -3314,9 +3395,9 @@ function OverviewDashboard({
                   fontFamily: mono,
                   lineHeight: 1,
                   color:
-                    totalNetMargin >= OVERALL_TARGET
+                    roundRate(totalNetMargin) >= OVERALL_TARGET
                       ? "var(--up)"
-                      : totalNetMargin >= OVERALL_RED
+                      : roundRate(totalNetMargin) >= OVERALL_RED
                       ? "var(--wn)"
                       : "var(--dn)",
                 }}
@@ -3481,7 +3562,7 @@ function OverviewDashboard({
                     pointerEvents: "none",
                   }}
                 >
-                  <div style={{ fontSize: 9, color: "var(--t4)", fontWeight: 700 }}>合計</div>
+                  <div style={{ fontSize: 10, color: "var(--t4)", fontWeight: 700 }}>合計</div>
                   <div
                     style={{
                       fontSize: 12,
@@ -3610,7 +3691,7 @@ function OverviewDashboard({
                 rev: slD?.rev || 0,
                 net: slD?.net || 0,
                 margin: slD?.trueNetMargin || 0,
-                target: slD?.targetNetRate || 0.15,
+                target: slD ? slD.targetNetRate : 0.15,
                 orders: slD?.valid || 0,
                 opexRate:
                   slD && slD.rev > 0 ? slD.opExpTotal / slD.rev : 0,
@@ -3625,7 +3706,7 @@ function OverviewDashboard({
                 rev: spS?.tG || 0,
                 net: spS?.afterComm || 0,
                 margin: spS?.netMargin || 0,
-                target: spS?.targetNet || 0.1,
+                target: spS ? spS.targetNet : 0.1,
                 orders: spS?.validN || 0,
                 opexRate: spS && spS.tG > 0 ? spS.tOp / spS.tG : 0,
                 aov: spS?.avgAOV || 0,
@@ -3639,7 +3720,6 @@ function OverviewDashboard({
                 net: posRetail?.coveredNet || 0,
                 margin: chNet(posRetail),
                 target: posTarget,
-                targetLabel: "目標",
                 orders: posRetail?.orders || 0,
                 opexRate:
                   posRetail && posRetail.rev > 0 ? posRetail.op / posRetail.rev : 0,
@@ -3732,11 +3812,11 @@ function OverviewDashboard({
                         sub: p.empty
                           ? undefined
                           : roundRate(p.margin) >= p.target
-                            ? `${p.targetLabel ? "高於" + p.targetLabel + " " : "超標 "}+${(
+                            ? `高於目標 +${(
                                 (roundRate(p.margin) - p.target) *
                                 100
                               ).toFixed(2)}%`
-                            : `${p.targetLabel ? "距" + p.targetLabel : "差"} ${(
+                            : `差 ${(
                                 (p.target - roundRate(p.margin)) *
                                 100
                               ).toFixed(2)}%`,
@@ -3789,7 +3869,7 @@ function OverviewDashboard({
                         {k.sub && (
                           <div
                             style={{
-                              fontSize: 9,
+                              fontSize: 10,
                               color: k.c || "var(--t4)",
                               marginTop: 2,
                               fontWeight: 600,
@@ -3875,7 +3955,7 @@ function OverviewDashboard({
                       </div>
                       <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 3 }}>
                         {empty ? (
-                          "本期沒有訂單"
+                          ""
                         ) : (
                           <>
                             淨利 {fmt$(c.coveredNet)}・
@@ -4030,7 +4110,7 @@ function OverviewDashboard({
                           {c.key === "dealer" && !empty && (
                             <span
                               style={{
-                                fontSize: 9,
+                                fontSize: 10,
                                 padding: "1px 5px",
                                 borderRadius: 4,
                                 border: `1px solid ${posC}55`,
@@ -4090,7 +4170,7 @@ function OverviewDashboard({
                         {nm === null ? "—" : fmtP(nm)}
                         {!empty && c.noCostCount > 0 && (
                           <span
-                            style={{ fontSize: 9, color: "var(--wn)", marginLeft: 4 }}
+                            style={{ fontSize: 10, color: "var(--wn)", marginLeft: 4 }}
                             title={`${c.noCostCount} 筆算不出成本，未計入此通路淨利率`}
                           >
                             缺{c.noCostCount}
@@ -4323,7 +4403,7 @@ function OverviewDashboard({
                 dy={4}
               />
               <YAxis
-                tick={{ fontSize: 9, fill: "var(--t3)", fontFamily: mono }}
+                tick={{ fontSize: 10, fill: "var(--t3)", fontFamily: mono }}
                 axisLine={false}
                 tickLine={false}
                 tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
@@ -4504,7 +4584,7 @@ function OverviewDashboard({
               />
               <Bar
                 dataKey="posRev"
-                name="門市零售"
+                name="門市（現場零售）"
                 fill={posC}
                 opacity={0.9}
                 radius={[0, 0, 0, 0]}
@@ -4513,7 +4593,7 @@ function OverviewDashboard({
               />
               <Bar
                 dataKey="posOtherRev"
-                name="門市其他"
+                name="門市其他通路"
                 fill={posC}
                 opacity={0.45}
                 radius={[3, 3, 0, 0]}
@@ -4562,7 +4642,7 @@ function OverviewDashboard({
             <Package size={14} color="var(--t3)" /> 官網／蝦皮 熱銷排行
           </div>
           <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 16 }}>
-            綠＝官網・橘＝蝦皮，各自計算（不含門市與滿額贈）
+            各自計算（不含門市與滿額贈）
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {crossProductRank.map((p, i) => {
@@ -5219,7 +5299,7 @@ const CmpVal = ({ label, cur, prev }) => {
     c = d > 0 ? "var(--up)" : d < 0 ? "var(--dn)" : "var(--t3)";
   } else {
     const d = cur - prev;
-    txt = `${d >= 0 ? "+" : "−"}${fmt$(Math.abs(d))}`;
+    txt = `${d >= 0 ? "+" : "-"}${fmt$(Math.abs(d))}`;
     c = d > 0 ? "var(--up)" : d < 0 ? "var(--dn)" : "var(--t3)";
   }
   return (
@@ -5265,7 +5345,6 @@ function PeriodCompare({ monthly, sY, sM, partialDay }) {
     };
     /* 節慶型電商季節性強：同比（去年同期）優先，環比僅供參考 */
     let cur;
-    let missYoY = null;
     const groups = [];
     if (sM !== "All") {
       const curKey = `${sY}-${sM}`;
@@ -5286,7 +5365,6 @@ function PeriodCompare({ monthly, sY, sM, partialDay }) {
           prev: cut(pyKey),
           primary: true,
         });
-      else missYoY = `同比 ${pyKey.replace("-", "/")}`;
       if (monthly[pmKey])
         groups.push({
           label: `環比 ${pmKey.replace("-", "/")}${tag}`,
@@ -5313,10 +5391,9 @@ function PeriodCompare({ monthly, sY, sM, partialDay }) {
           prev: py,
           primary: true,
         });
-      else missYoY = `同比 ${Number(sY) - 1}年`;
     }
-    if (!cur || (!groups.length && !missYoY)) return null;
-    return { cur, groups, missYoY };
+    if (!cur || !groups.length) return null;
+    return { cur, groups };
   }, [monthly, sY, sM, partialDay]);
   if (!data) return null;
   return (
@@ -5348,28 +5425,7 @@ function PeriodCompare({ monthly, sY, sM, partialDay }) {
           <CmpVal label="淨利" cur={data.cur.net} prev={g.prev.net} />
         </div>
       ))}
-      {data.missYoY && (
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "5px 12px",
-            borderRadius: 8,
-            background: "var(--s2)",
-            border: "1px dashed var(--s4)",
-            fontSize: 11,
-            fontWeight: 600,
-          }}
-        >
-          <span style={{ color: "var(--t3)", fontWeight: 700 }}>
-            {data.missYoY}
-          </span>
-          <span style={{ color: "var(--t4)", fontWeight: 500 }}>
-            匯入去年報表後顯示
-          </span>
-        </div>
-      )}
+      {/* 沒有去年資料就不顯示同比（09-04 老闆不匯 2025 報表；以前掛「匯入去年報表後顯示」，2026-11-03 稽核拿掉） */}
     </div>
   );
 }
@@ -5423,7 +5479,7 @@ function OrderDetail({ order, isSL, slFp, slCosts, spCosts }) {
         { l: "通路後毛利", v: order.grossProfit, sub: true },
         { l: "內部營業費", v: -order.orderOpExpense, neg: true },
         { l: "稅賦（以買家支付計）", v: -order.orderTax, neg: true },
-        { l: "最終淨利", v: order.finalNetProfit, bold: true },
+        { l: "分潤前淨利", v: order.finalNetProfit, bold: true },
       ];
 
   const metaBits = isSL
@@ -5436,7 +5492,7 @@ function OrderDetail({ order, isSL, slFp, slCosts, spCosts }) {
       ].filter(Boolean)
     : [
         order.status && `狀態：${order.status}`,
-        order.refundStatus && `退貨/退款：${order.refundStatus}`,
+        order.refundStatus && `退貨／退款：${order.refundStatus}`,
         order.partRef &&
           `⚠ 部分退款：以留下的部分入帳${
             order.partRefCostAll
@@ -5720,7 +5776,7 @@ function POSOrderDetail({
                         {fmt$(u * it.qty)}
                         {has(it) && (
                           <span
-                            style={{ fontSize: 9, color: "var(--t4)", marginLeft: 3 }}
+                            style={{ fontSize: 10, color: "var(--t4)", marginLeft: 3 }}
                             title="此筆成本已隨本期快照鎖定，不受之後改原料價影響"
                           >
                             鎖
@@ -5985,13 +6041,36 @@ function ProfitCenter() {
   useEffect(() => {
     cReadyRef.current = cReady;
   }, [cReady]);
+  /* 離線偵測：以前離線開頁只會一直「連線中」轉圈，叫人等燈變綠卻等不到（2026-11-03 稽核） */
+  const [online, setOnline] = useState(
+    () => typeof navigator === "undefined" || navigator.onLine !== false
+  );
+  const onlineRef = useRef(online);
+  useEffect(() => {
+    onlineRef.current = online;
+  }, [online]);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
   const guardWrite = useCallback(() => {
     if (listenerDead.current) {
       toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" });
       return false;
     }
     if (cReadyRef.current) return true;
-    toast("雲端同步中，請等右上角同步燈變綠再操作", { type: "warning" });
+    toast(
+      onlineRef.current
+        ? "雲端同步中，請等右上角同步燈變綠再操作"
+        : "目前離線，連上網路後再操作",
+      { type: "warning" }
+    );
     return false;
   }, [toast]);
 
@@ -6034,11 +6113,14 @@ function ProfitCenter() {
   useEffect(() => {
     persist(SK.spCosts, spCosts);
   }, [spCosts, persist]);
+  /* 訂單本機快取只存最近 CACHE_MONTHS 個月（開頁先畫用；雲端是全量，首載整份取代、
+     寫入要等首載到齊，所以本機少存舊月份不會刪到雲端）。三平台全存在 2026-11 已用掉
+     Chrome 上限約 89%、約 12 月中寫滿（2026-11-03 稽核，老闆「全部修」） */
   useEffect(() => {
-    persist(SK.slOrders, slOrders);
+    persist(SK.slOrders, recentOrdersForCache(slOrders));
   }, [slOrders, persist]);
   useEffect(() => {
-    persist(SK.spOrders, spOrders);
+    persist(SK.spOrders, recentOrdersForCache(spOrders));
   }, [spOrders, persist]);
   useEffect(() => {
     persist(SK.commissions, commissions);
@@ -6053,7 +6135,7 @@ function ProfitCenter() {
     persist(SK.spRecipes, spRecipes);
   }, [spRecipes, persist]);
   useEffect(() => {
-    persist(SK.posOrders, posOrders);
+    persist(SK.posOrders, recentOrdersForCache(posOrders));
   }, [posOrders, persist]);
   useEffect(() => {
     persist(SK.posCosts, posCosts);
@@ -7987,7 +8069,7 @@ function ProfitCenter() {
           .map((o) => String(o.date || "").substring(5, 7))
       ),
     ].sort();
-    const tnr = (parseFloat(slFp.targetNet) || 15) / 100;
+    const tnr = pctOr(slFp.targetNet, 15) / 100;
     const mm = {};
     Object.keys(slCosts).forEach((k) => {
       /* costKey＝商品名_選項，用最後一個底線切：有 5 支商品名本身含「 _ 」
@@ -8182,7 +8264,7 @@ function ProfitCenter() {
             ),
           ].sort()
         : [];
-    const targetNet = (parseFloat(spFpEff.targetNet) || 10) / 100;
+    const targetNet = pctOr(spFpEff.targetNet, 10) / 100;
     const prods = {};
     let tG = 0,
       tV = 0,
@@ -8807,7 +8889,11 @@ function ProfitCenter() {
   /* mode：undefined＝依目前狀態鎖定／解除；"fill"＝已鎖月份只補「成本未填（null）」的品項，
      不動參數與其他品項（以前唯一的路是解除→重鎖，會把整月凍結成本一起丟掉）（F05） */
   const toggleSnap = (mode) => {
-    if (!currentData?.orderList?.length) return;
+    /* 以前無聲 return，按了像當掉（2026-11-03 稽核） */
+    if (!currentData?.orderList?.length) {
+      toast("本期沒有訂單可以鎖定", { type: "info" });
+      return;
+    }
     if (!guardWrite()) return;
     /* 各月營業費 % 不同：限制單一月份操作，避免跨月訂單被寫入同一組（今天的）參數
        （用 effM：該平台沒資料的月份會被視為全月份，不能拿來鎖） */
@@ -9028,7 +9114,7 @@ function ProfitCenter() {
             ? `\n\n⚠ 同時會丟棄 ${frozen.n} 個品項列的凍結成本（凍結合計 ${fmt$(
                 frozen.frozenSum
               )}；以目前成本表重算為 ${fmt$(frozen.nowSum)}，${
-                Math.abs(diff) < 1 ? "沒有差額" : `差 ${diff > 0 ? "+" : "−"}${fmt$(Math.abs(diff))}`
+                Math.abs(diff) < 1 ? "沒有差額" : `差 ${diff > 0 ? "+" : "-"}${fmt$(Math.abs(diff))}`
               }）。重新鎖定會以現行成本表重凍${
                 frozen.unfilled > 0
                   ? `——其中 ${frozen.unfilled} 列以目前成本表對不到成本，重鎖後會變成未填`
@@ -9469,7 +9555,7 @@ function ProfitCenter() {
         "通路後毛利",
         "營業費",
         "稅賦",
-        "單筆淨利",
+        "最終淨利",
       ]);
       filteredOrders.forEach((o) =>
         rows.push([
@@ -9497,7 +9583,7 @@ function ProfitCenter() {
         ["營業費（含廣告）", r0(spS0.tOp)],
         ["稅賦", r0(spS0.tTx)],
         ["分潤", r0(spS0.comm)],
-        ["最終淨利", r0(spS0.afterComm)],
+        ["分潤後淨利", r0(spS0.afterComm)],
         ["淨利率", (spS0.netMargin * 100).toFixed(2) + "%"],
         ["平均客單價", r0(spS0.avgAOV)],
         ["單筆平均淨利", r0(spS0.avgNetPer)],
@@ -9514,7 +9600,7 @@ function ProfitCenter() {
         "通路後毛利",
         "營業費",
         "稅賦",
-        "單筆淨利",
+        "分潤前淨利",
       ]);
       filteredOrders.forEach((o) =>
         rows.push([
@@ -9545,11 +9631,12 @@ function ProfitCenter() {
   );
   const commitCost = useCallback(
     (key, n) => {
-      if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return; }
+      if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return false; }
       if (!cReady) {
         toast("雲端同步中，請稍候再填成本", { type: "warning" });
-        return;
+        return false;
       }
+      if (n < 0) return false;
       /* 門市要寫 posCosts——原本只分 isSL/否，門市手填會寫進蝦皮成本表（打完就不見） */
       const setter = isPOS ? setPosCosts : isSL ? setSlCosts : setSpCosts;
       setter((pr) => ({ ...pr, [key]: n }));
@@ -9702,11 +9789,12 @@ function ProfitCenter() {
   }, [isPOS, matrixAll, posRatios, posRecipes, posCosts]);
   const commitRatio = useCallback(
     (key, v) => {
-      if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return; }
+      if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return false; }
       if (!cReady) {
         toast("雲端同步中，請稍候再設定成本率", { type: "warning" });
-        return;
+        return false;
       }
+      if (v < 0) return false;
       setPosRatios((p) => {
         const n = { ...p };
         if (!(v > 0)) delete n[key];
@@ -9850,17 +9938,10 @@ function ProfitCenter() {
             lineHeight: 1.7,
           }}
         >
-          率只在「沒有配方也沒有手填成本」時生效——之後補了配方或成本，配方優先、率自動失效（不必刪）。
-          估算成本會跟著鎖定快照凍結。
-          {posRatioSuggest && (
-            <>
-              　建議值基準＝本期「成本全部來自配方／手填」的{posRatioSuggest.scope}訂單{" "}
-              {posRatioSuggest.n} 筆，不含任何估算值。
-              {posRatioSuggest.dealer !== null &&
-                `　對照：經銷單實測成本率 ${posRatioSuggest.dealer}%（${posRatioSuggest.dealerN} 筆）——泛稱鍵若混了經銷單，估出來會偏樂觀。`}
-            </>
-          )}
-          　有正規品名＋規格的品項請掛配方，不要用率——率是給「查不出賣了什麼」的泛稱鍵用的。
+          {/* 建議值基準跟按鈕 title 一字不差，拿掉；四句縮成兩句（2026-11-03 稽核） */}
+          率只在沒有配方、也沒有手填成本時生效（估算成本會跟著快照凍結）；有正規品名＋規格的品項請掛配方，率只給泛稱鍵用。
+          {posRatioSuggest && posRatioSuggest.dealer !== null &&
+            `　對照：經銷單實測成本率 ${posRatioSuggest.dealer}%（${posRatioSuggest.dealerN} 筆），泛稱鍵混了經銷單會估得偏樂觀。`}
         </div>
       </div>
     ) : null;
@@ -10120,7 +10201,9 @@ function ProfitCenter() {
                                     e.target.value = c.name;
                                     return;
                                   }
-                                  commitCompField(id, "name", e.target.value);
+                                  /* 被拒（雲端未就緒等）＝框內還原原名，不留沒存進去的字（2026-11-03 稽核） */
+                                  if (commitCompField(id, "name", e.target.value) === false)
+                                    e.target.value = c.name;
                                 }}
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter")
@@ -10150,9 +10233,10 @@ function ProfitCenter() {
                                 list="comp-cats"
                                 placeholder="分類"
                                 aria-label={`${c.name} 分類`}
-                                onBlur={(e) =>
-                                  commitCompField(id, "cat", e.target.value)
-                                }
+                                onBlur={(e) => {
+                                  if (commitCompField(id, "cat", e.target.value) === false)
+                                    e.target.value = c.cat || "";
+                                }}
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter")
                                     e.currentTarget.blur();
@@ -10170,7 +10254,7 @@ function ProfitCenter() {
                               {(compUsage[id] || 0) > 0 && (
                                 <span
                                   style={{
-                                    fontSize: 9,
+                                    fontSize: 10,
                                     fontFamily: mono,
                                     color: "var(--t3)",
                                     fontWeight: 700,
@@ -10322,7 +10406,7 @@ function ProfitCenter() {
                         onChange={(e) => setCleanupOnly(e.target.checked)}
                         style={{ accentColor: "var(--wn)" }}
                       />{" "}
-                      只看可清理（180 天未售/無紀錄）
+                      只看可清理（180 天未售／無紀錄）
                     </label>
                     <label
                       style={{
@@ -10525,12 +10609,28 @@ function ProfitCenter() {
                                         textOverflow: "ellipsis",
                                       }}
                                     >
+                                      {/* 全部都是滿額贈送出去的（0 元）：毛利貢獻是負的成本，標出來免得看成賠錢商品（2026-11-03 稽核） */}
+                                      {p.soldQty > 0 && p.paidQty === 0 && (
+                                        <span
+                                          style={{
+                                            fontSize: 10,
+                                            fontWeight: 700,
+                                            color: "var(--t3)",
+                                            border: "1px solid var(--s3)",
+                                            borderRadius: 4,
+                                            padding: "0 4px",
+                                            marginRight: 6,
+                                          }}
+                                        >
+                                          贈品
+                                        </span>
+                                      )}
                                       {p.name}
                                     </div>
                                     {p.stale && (
                                       <div
                                         style={{
-                                          fontSize: 9,
+                                          fontSize: 10,
                                           fontWeight: 700,
                                           marginTop: 2,
                                           whiteSpace: "nowrap",
@@ -10547,13 +10647,13 @@ function ProfitCenter() {
                                     {p.excludedOnly && (
                                       <div
                                         style={{
-                                          fontSize: 9,
+                                          fontSize: 10,
                                           fontWeight: 700,
                                           marginTop: 2,
                                           whiteSpace: "nowrap",
                                           color: "var(--t3)",
                                         }}
-                                        title="這支只在「未計入 KPI」的通路賣出：不進商品毛利表，但鎖定時會一起凍結，成本照樣要填"
+                                        title="這支只在「未計入 KPI」的通路賣出：不算進本期毛利，但鎖定時會一起凍結，成本照樣要填"
                                       >
                                         只在未計入通路賣出
                                       </div>
@@ -10686,7 +10786,7 @@ function ProfitCenter() {
                                           {fmt$d(costsEff[p.key])}
                                           <span
                                             style={{
-                                              fontSize: 9,
+                                              fontSize: 10,
                                               marginLeft: 4,
                                               color: "var(--t3)",
                                               fontWeight: 600,
@@ -10942,7 +11042,7 @@ function ProfitCenter() {
                                             marginTop: 6,
                                           }}
                                         >
-                                          原料庫還沒有組件——先在上方「成本組件」新增（例：高山茶
+                                          原料庫還沒有組件——先在上方「原料庫」新增（例：高山茶
                                           150g、茶包袋、禮盒A、提袋）
                                         </div>
                                       )}
@@ -11083,7 +11183,7 @@ function ProfitCenter() {
                 </button>
               ))}
             </div>
-            <SyncDot status={sync} last={lastSyncAt} />
+            <SyncDot status={online ? sync : "idle"} last={lastSyncAt} />
             <button
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
               aria-label={
@@ -11104,7 +11204,14 @@ function ProfitCenter() {
               {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
             </button>
             <select
-              value={sY}
+              value={(() => {
+                /* FY 換算成自訂區間後，選單照樣顯示選的是哪個 FY（以前只顯示「自訂區間」，2026-11-03 稽核） */
+                const fy = sY === "Custom" ? fyOfRange(range) : null;
+                return fy !== null &&
+                  aY.some((y) => Number(y) === fy || Number(y) === fy + 1)
+                  ? `FY${fy}`
+                  : sY;
+              })()}
               onChange={(e) => {
                 const v = e.target.value;
                 /* 會計年度（公司 4 月起算）：換算成自訂區間 4/1～翌年 3/31 */
@@ -11379,13 +11486,13 @@ function ProfitCenter() {
                     )}
                     <div
                       style={{
-                        fontSize: 9,
+                        fontSize: 10,
                         color: "var(--t4)",
                         marginTop: 4,
                         lineHeight: 1.6,
                       }}
                     >
-                      要改本期 %：解除快照 → 改參數 → 重新鎖定（品項成本會以現值重凍）
+                      要改本期 %：解除快照 → 改參數 → 重新鎖定
                     </div>
                   </div>
                 )}
@@ -11577,10 +11684,31 @@ function ProfitCenter() {
               minWidth: 0,
             }}
           >
+            {/* 雲端首載還沒到齊時畫的是本機暫存（只存最近幾個月），標出來免得把半套數字當正式結果（2026-11-03 稽核） */}
+            {!cReady &&
+              Object.keys(slOrders).length +
+                Object.keys(spOrders).length +
+                Object.keys(posOrders).length >
+                0 && (
+                <div
+                  style={{
+                    background: "var(--wn-dim)",
+                    border: "1px solid var(--wn-bdr)",
+                    borderRadius: 12,
+                    padding: "10px 16px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--wn)",
+                  }}
+                >
+                  雲端同步中：先顯示這台裝置的暫存，數字可能還沒更新
+                </div>
+              )}
             {/* 主內容區單獨包一層邊界：切換平台時 key 變動＝自動重置錯誤狀態 */}
             <ErrorBoundary inner key={platform}>
             {isOverview ? (
               <OverviewDashboard
+                syncing={!cReady}
                 slData={slData}
                 spData={spData}
                 posData={posData}
@@ -11617,13 +11745,15 @@ function ProfitCenter() {
                 <div
                   style={{ fontSize: 15, fontWeight: 700, color: "var(--t3)" }}
                 >
-                  等待財務數據注入
+                  {cReady ? "等待財務數據注入" : "雲端資料載入中…"}
                 </div>
-                <div style={{ fontSize: 12, color: "var(--t4)" }}>
-                  {isPOS
-                    ? "拖入門市 POS 的「交易明細」＋「POS訂單明細」兩份報表"
-                    : `上傳${isSL ? "官網" : "蝦皮"}訂單報表以啟動分析`}
-                </div>
+                {cReady && (
+                  <div style={{ fontSize: 12, color: "var(--t4)" }}>
+                    {isPOS
+                      ? "拖入門市 POS 的「交易明細」＋「POS訂單明細」兩份報表"
+                      : `上傳${isSL ? "官網" : "蝦皮"}訂單報表以啟動分析`}
+                  </div>
+                )}
               </div>
             ) : isPOS ? (
               <>
@@ -11719,8 +11849,26 @@ function ProfitCenter() {
                           marginBottom: 16,
                         }}
                       >
-                        <Tag v={slD.gapVal >= 0 ? "ok" : "bad"}>
-                          <Zap size={10} /> {slD.gapVal >= 0 ? "穩健" : "警告"}
+                        {/* 標籤跟淨利率數字同一套三段色：黃段（目標−3pp 以內）叫「未達標」；沒訂單不下判斷 */}
+                        <Tag
+                          v={
+                            slD.valid === 0
+                              ? "default"
+                              : slD.gapVal >= 0
+                              ? "ok"
+                              : roundRate(slD.trueNetMargin) >= slD.targetNetRate - 0.03
+                              ? "warn"
+                              : "bad"
+                          }
+                        >
+                          <Zap size={10} />{" "}
+                          {slD.valid === 0
+                            ? "無資料"
+                            : slD.gapVal >= 0
+                            ? "穩健"
+                            : roundRate(slD.trueNetMargin) >= slD.targetNetRate - 0.03
+                            ? "未達標"
+                            : "警告"}
                         </Tag>
                         {slD.returnCount > 0 && (
                           <Tag v={slD.returnRate > 0.05 ? "warn" : "default"}>
@@ -11756,21 +11904,23 @@ function ProfitCenter() {
                                 )}・稅 ${pct(snapParams.list[0].tax)}`}
                           </Tag>
                         )}
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color: slD.gapVal >= 0 ? "var(--t3)" : "var(--wn)",
-                            marginLeft: 8,
-                          }}
-                        >
-                          {slD.gapVal >= 0
-                            ? `✓ 淨利率 ${fmtP(
-                                slD.trueNetMargin
-                              )}，超標 ${slD.gapVal.toFixed(2)}%`
-                            : `⚠ 淨利率 ${fmtP(
-                                slD.trueNetMargin
-                              )}，距目標差 ${Math.abs(slD.gapVal).toFixed(2)}%`}
-                        </span>
+                        {slD.valid > 0 && (
+                          <span
+                            style={{
+                              fontSize: 12,
+                              color: slD.gapVal >= 0 ? "var(--t3)" : "var(--wn)",
+                              marginLeft: 8,
+                            }}
+                          >
+                            {slD.gapVal >= 0
+                              ? `✓ 淨利率 ${fmtP(
+                                  slD.trueNetMargin
+                                )}，高於目標 +${slD.gapVal.toFixed(2)}%`
+                              : `⚠ 淨利率 ${fmtP(
+                                  slD.trueNetMargin
+                                )}，距目標差 ${Math.abs(slD.gapVal).toFixed(2)}%`}
+                          </span>
+                        )}
                       </div>
                       <div
                         style={{
@@ -11815,7 +11965,7 @@ function ProfitCenter() {
                             原始營收：{fmt$(slD.rawTotal)} ｜ 取消：
                             {fmt$(slD.cancelledTotal)}
                             {slD.returnRev > 0
-                              ? ` ｜ 部分退款：−${fmt$(slD.returnRev)}`
+                              ? ` ｜ 部分退款：-${fmt$(slD.returnRev)}`
                               : ""}
                           </div>
                           <PeriodCompare
@@ -11916,6 +12066,7 @@ function ProfitCenter() {
                           ].map((item, i, arr) => (
                             <React.Fragment key={i}>
                               <div
+                                className="wf-cell"
                                 style={{
                                   flex: "1 1 0",
                                   minWidth: 90,
@@ -11934,6 +12085,7 @@ function ProfitCenter() {
                                   {item.l}
                                 </div>
                                 <div
+                                  className="wf-num"
                                   style={{
                                     fontSize: 20,
                                     fontWeight: item.bold ? 800 : 600,
@@ -11947,6 +12099,7 @@ function ProfitCenter() {
                               </div>
                               {i < arr.length - 1 && (
                                 <div
+                                  className="wf-arr"
                                   style={{
                                     color: "var(--s4)",
                                     fontSize: 18,
@@ -11969,10 +12122,7 @@ function ProfitCenter() {
                           l: "精準營收基底",
                           v: fmt$(slD.rev),
                           c: "var(--t1)",
-                          /* 部分退款只從營收扣，以前哪裡都沒顯示，「原始−取消」對不上營收（F43） */
-                          h: `原始 ${fmt$(slD.rawTotal)} ｜ 取消 ${fmt$(
-                            slD.cancelledTotal
-                          )}${slD.returnRev > 0 ? ` ｜ 部分退款 −${fmt$(slD.returnRev)}` : ""}`,
+                          /* 原始／取消／部分退款只留 Hero 大字下面那行（同一件事講兩次，2026-11-03 稽核） */
                         },
                         {
                           l: "預估總入帳",
@@ -11984,16 +12134,16 @@ function ProfitCenter() {
                           l: "商品毛利率",
                           v: fmtP(slD.grossMargin),
                           c:
-                            slD.grossMargin >= 0.62
+                            roundRate(slD.grossMargin) >= 0.62
                               ? "var(--up)"
-                              : slD.grossMargin >= 0.58
+                              : roundRate(slD.grossMargin) >= 0.58
                               ? "var(--accent)"
                               : "var(--dn)",
                           h:
-                            slD.grossMargin >= 0.62
-                              ? "✓ 超越目標 62%，表現優異"
-                              : slD.grossMargin >= 0.58
-                              ? "✓ 達標，目標帶 58~60%"
+                            roundRate(slD.grossMargin) >= 0.62
+                              ? "✓ 高於 62%，表現優異"
+                              : roundRate(slD.grossMargin) >= 0.58
+                              ? "✓ 達標，目標帶 58–60%"
                               : "⚠ 低於警戒線 58%，檢視成本與定價",
                         },
                         {
@@ -12004,25 +12154,24 @@ function ProfitCenter() {
                           /* 實收口徑（2026-07-08 基準）：
                              54 優異／52~54 目標帶／50 調整／介入線 */
                           c: (() => {
-                            const r =
-                              slD.rev > 0
-                                ? slD.contributionMargin / slD.rev
-                                : 0;
+                            const r = roundRate(
+                              slD.rev > 0 ? slD.contributionMargin / slD.rev : 0
+                            );
                             return r >= 0.52
                               ? "var(--up)"
                               : r >= 0.5
                               ? "var(--wn)"
                               : "var(--dn)";
                           })(),
+                          /* 「理論天花板 ≈54.5%」是含 1% 系統費的舊口徑，11-02 不逐單扣後 1／3／4 月都超過它，刪掉（2026-11-03 稽核） */
                           h: (() => {
-                            const r =
-                              slD.rev > 0
-                                ? slD.contributionMargin / slD.rev
-                                : 0;
+                            const r = roundRate(
+                              slD.rev > 0 ? slD.contributionMargin / slD.rev : 0
+                            );
                             return r >= 0.54
-                              ? "✓ 表現優異（理論天花板 ≈54.5%）"
+                              ? "✓ 表現優異"
                               : r >= 0.52
-                              ? "✓ 達標，目標帶 52~54%"
+                              ? "✓ 達標，目標帶 52–54%"
                               : r >= 0.5
                               ? "⚠ 低於 52%：先調商品結構與曝光，收斂折讓贈品"
                               : "⚠ 低於介入線 50%：檢視折讓、贈品、通路費";
@@ -12041,18 +12190,19 @@ function ProfitCenter() {
                         >
                           <Lbl>{k.l}</Lbl>
                           <div
+                            className="kpi-num"
                             style={{
                               fontSize: 30,
                               fontWeight: 700,
                               fontFamily: mono,
                               letterSpacing: "-0.03em",
-                              color: k.c,
+                              color: slD.valid > 0 ? k.c : "var(--t3)",
                               marginTop: 6,
                             }}
                           >
                             {k.v}
                           </div>
-                          {k.h && (
+                          {k.h && slD.valid > 0 && (
                             <div
                               style={{
                                 fontSize: 11,
@@ -12088,24 +12238,24 @@ function ProfitCenter() {
                           v: fmtP(slD.voucherRate),
                           ic: <Wallet size={13} />,
                           c:
-                            slD.voucherRate > 0.065
+                            roundRate(slD.voucherRate) > 0.065
                               ? "var(--dn)"
-                              : slD.voucherRate > 0.055
+                              : roundRate(slD.voucherRate) > 0.055
                               ? "var(--wn)"
-                              : slD.voucherRate < 0.04
+                              : roundRate(slD.voucherRate) < 0.04
                               ? "var(--t3)"
-                              : slD.voucherRate <= 0.045
+                              : roundRate(slD.voucherRate) <= 0.045
                               ? "var(--up)"
                               : "var(--purple)",
                           h:
-                            slD.voucherRate > 0.065
+                            roundRate(slD.voucherRate) > 0.065
                               ? "⚠ 品牌警戒！單月 >6.5%，立即介入"
-                              : slD.voucherRate > 0.055
+                              : roundRate(slD.voucherRate) > 0.055
                               ? "⚠ 超出警戒線 5.5%，啟動檢討"
-                              : slD.voucherRate < 0.04
-                              ? "低於目標下限 4%，折讓/贈品力度偏低"
-                              : slD.voucherRate <= 0.045
-                              ? "✓ 在目標範圍 4~4.5% 內"
+                              : roundRate(slD.voucherRate) < 0.04
+                              ? "低於目標下限 4%，折讓／贈品力度偏低"
+                              : roundRate(slD.voucherRate) <= 0.045
+                              ? "✓ 在目標範圍 4–4.5% 內"
                               : "注意：接近警戒線 5.5%",
                         },
                         {
@@ -12113,19 +12263,19 @@ function ProfitCenter() {
                           v: fmtP(slD.giftCostRate || 0),
                           ic: <Gift size={13} />,
                           c:
-                            (slD.giftCostRate || 0) > 0.045
+                            roundRate(slD.giftCostRate) > 0.045
                               ? "var(--dn)"
-                              : (slD.giftCostRate || 0) > 0.035
+                              : roundRate(slD.giftCostRate) > 0.035
                               ? "var(--wn)"
-                              : (slD.giftCostRate || 0) >= 0.018
+                              : roundRate(slD.giftCostRate) >= 0.018
                               ? "var(--up)"
                               : "var(--t3)",
                           h:
-                            (slD.giftCostRate || 0) > 0.045
+                            roundRate(slD.giftCostRate) > 0.045
                               ? `⚠ 超上限 4.5%！成本 ${fmt$(slD.giftCost)}`
-                              : (slD.giftCostRate || 0) > 0.035
+                              : roundRate(slD.giftCostRate) > 0.035
                               ? `⚠ 超警戒 3.5%，共 ${slD.giftQty} 件`
-                              : (slD.giftCostRate || 0) >= 0.018
+                              : roundRate(slD.giftCostRate) >= 0.018
                               ? `✓ 目標範圍內，共 ${slD.giftQty} 件`
                               : `低於正常值，共 ${slD.giftQty} 件`,
                         },
@@ -12154,17 +12304,18 @@ function ProfitCenter() {
                             {k.ic} {k.l}
                           </div>
                           <div
+                            className="kpi-num-md"
                             style={{
                               fontSize: 26,
                               fontWeight: 700,
                               fontFamily: mono,
                               letterSpacing: "-0.03em",
-                              color: k.c,
+                              color: slD.valid > 0 ? k.c : "var(--t3)",
                             }}
                           >
                             {k.v}
                           </div>
-                          {k.h && (
+                          {k.h && slD.valid > 0 && (
                             <div
                               style={{
                                 fontSize: 11,
@@ -12226,17 +12377,18 @@ function ProfitCenter() {
                             {k.l}
                           </div>
                           <div
+                            className="kpi-num-md"
                             style={{
                               fontSize: 26,
                               fontWeight: 700,
                               fontFamily: mono,
                               letterSpacing: "-0.03em",
-                              color: k.c,
+                              color: slD.valid > 0 ? k.c : "var(--t3)",
                             }}
                           >
                             {k.v}
                           </div>
-                          {k.h && (
+                          {k.h && slD.valid > 0 && (
                             <div
                               style={{
                                 fontSize: 11,
@@ -12318,12 +12470,7 @@ function ProfitCenter() {
                             <Users size={10} /> 已扣分潤 {fmt$(spS.comm)}
                           </Tag>
                         )}
-                        {spS.refundN > 0 && (
-                          <Tag v="default">
-                            退貨/退款 {spS.refundN} 筆 · {fmt$(spS.refundG)}{" "}
-                            未計入
-                          </Tag>
-                        )}
+                        {/* 退貨／退款筆數只留第三排 KPI「退貨／退款排除」（同一件事講兩次，2026-11-03 稽核） */}
                       </div>
                       <div
                         style={{
@@ -12413,6 +12560,22 @@ function ProfitCenter() {
                             }}
                           >
                             目標 {fmtP(spS.targetNet)}
+                            {spS.validN > 0 && (
+                              <>
+                                　差距{" "}
+                                <span
+                                  style={{
+                                    color:
+                                      roundRate(spS.netMargin) >= spS.targetNet
+                                        ? "var(--up)"
+                                        : "var(--dn)",
+                                  }}
+                                >
+                                  {roundRate(spS.netMargin) >= spS.targetNet ? "+" : ""}
+                                  {((roundRate(spS.netMargin) - spS.targetNet) * 100).toFixed(2)}%
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -12457,6 +12620,7 @@ function ProfitCenter() {
                           ].map((item, i, arr) => (
                             <React.Fragment key={i}>
                               <div
+                                className="wf-cell"
                                 style={{
                                   flex: "1 1 0",
                                   minWidth: 80,
@@ -12475,6 +12639,7 @@ function ProfitCenter() {
                                   {item.l}
                                 </div>
                                 <div
+                                  className="wf-num"
                                   style={{
                                     fontSize: 18,
                                     fontWeight: item.bold ? 800 : 600,
@@ -12494,6 +12659,7 @@ function ProfitCenter() {
                               </div>
                               {i < arr.length - 1 && (
                                 <div
+                                  className="wf-arr"
                                   style={{
                                     color: "var(--s4)",
                                     fontSize: 16,
@@ -12530,9 +12696,7 @@ function ProfitCenter() {
                           l: "商品毛利",
                           v: fmt$(spS.tG - spS.tC),
                           c: "var(--up)",
-                          h: `毛利率 ${fmtP(
-                            spS.tG > 0 ? (spS.tG - spS.tC) / spS.tG : 0
-                          )}`,
+                          /* 毛利率只留下排「商品毛利率」那張卡（2026-11-03 稽核） */
                         },
                         {
                           l: "分潤後淨利",
@@ -12565,18 +12729,19 @@ function ProfitCenter() {
                         >
                           <Lbl>{k.l}</Lbl>
                           <div
+                            className="kpi-num"
                             style={{
                               fontSize: 30,
                               fontWeight: 700,
                               fontFamily: mono,
                               letterSpacing: "-0.03em",
-                              color: k.c,
+                              color: spS.validN > 0 ? k.c : "var(--t3)",
                               marginTop: 6,
                             }}
                           >
                             {k.v}
                           </div>
-                          {k.h && (
+                          {k.h && spS.validN > 0 && (
                             <div
                               style={{
                                 fontSize: 11,
@@ -12597,8 +12762,9 @@ function ProfitCenter() {
                           l: "商品毛利率",
                           v: fmtP(spS.tG > 0 ? (spS.tG - spS.tC) / spS.tG : 0),
                           c: (() => {
-                            const r =
-                              spS.tG > 0 ? (spS.tG - spS.tC) / spS.tG : 0;
+                            const r = roundRate(
+                              spS.tG > 0 ? (spS.tG - spS.tC) / spS.tG : 0
+                            );
                             /* 63–65% 是 ⚠ 正常帶下緣：顏色跟判定句一致用警示色，不是綠（F45） */
                             return r >= 0.68
                               ? "var(--up)"
@@ -12609,14 +12775,15 @@ function ProfitCenter() {
                               : "var(--dn)";
                           })(),
                           note: (() => {
-                            const r =
-                              spS.tG > 0 ? (spS.tG - spS.tC) / spS.tG : 0;
+                            const r = roundRate(
+                              spS.tG > 0 ? (spS.tG - spS.tC) / spS.tG : 0
+                            );
                             return r >= 0.68
                               ? "✓ 超越目標 68%，表現優異"
                               : r >= 0.65
-                              ? "✓ 達標，目標 65~68%"
+                              ? "✓ 達標，目標 65–68%"
                               : r >= 0.63
-                              ? "⚠ 正常帶下緣，目標 65~68%"
+                              ? "⚠ 正常帶下緣，目標 65–68%"
                               : "⚠ 低於警戒線 63%，檢視定價";
                           })(),
                         },
@@ -12630,24 +12797,24 @@ function ProfitCenter() {
                           l: "優惠券發放率",
                           v: fmtP(spS.voucherRate),
                           c:
-                            spS.voucherRate > 0.03
+                            roundRate(spS.voucherRate) > 0.03
                               ? "var(--dn)"
-                              : spS.voucherRate > 0.025
+                              : roundRate(spS.voucherRate) > 0.025
                               ? "var(--wn)"
-                              : spS.voucherRate < 0.008
+                              : roundRate(spS.voucherRate) < 0.008
                               ? "var(--t3)"
-                              : spS.voucherRate <= 0.015
+                              : roundRate(spS.voucherRate) <= 0.015
                               ? "var(--up)"
                               : "var(--purple)",
                           note:
-                            spS.voucherRate > 0.03
+                            roundRate(spS.voucherRate) > 0.03
                               ? "⚠ 品牌警戒！單月 >3%，立即介入"
-                              : spS.voucherRate > 0.025
+                              : roundRate(spS.voucherRate) > 0.025
                               ? "⚠ 超出警戒線 2.5%，啟動檢討"
-                              : spS.voucherRate < 0.008
+                              : roundRate(spS.voucherRate) < 0.008
                               ? "低於下限 0.8%，本期幾乎未配券（確認檔期是否漏配）"
-                              : spS.voucherRate <= 0.015
-                              ? "✓ 在目標範圍 0.8~1.5% 內"
+                              : roundRate(spS.voucherRate) <= 0.015
+                              ? "✓ 在目標範圍 0.8–1.5% 內"
                               : "注意：接近警戒線 2.5%",
                         },
                         {
@@ -12657,6 +12824,7 @@ function ProfitCenter() {
                              比較前先四捨五入到畫面精度（roundRate），避免 47.50% 顯示卻判未達標 */
                           l: "通路後毛利率",
                           v: fmtP(spS.grossMargin),
+                          tip: "達標線 47.5%＝商品毛利 65% − 通路費 17.5%",
                           c:
                             roundRate(spS.grossMargin) >= 0.475
                               ? "var(--up)"
@@ -12667,7 +12835,7 @@ function ProfitCenter() {
                             roundRate(spS.grossMargin) >= 0.505
                               ? "✓ 超越 50.5%，表現優異"
                               : roundRate(spS.grossMargin) >= 0.475
-                              ? "✓ 達標，達標線 47.5%（商品毛利 65% − 通路費 17.5%）"
+                              ? "✓ 達標，達標線 47.5%"
                               : roundRate(spS.grossMargin) >= 0.455
                               ? "⚠ 觀察帶 45.5–47.5%：連 2 個月啟動檢討，先調商品結構、原則不漲價"
                               : "⚠ 低於介入線 45.5%：立即檢視平台費用與優惠券",
@@ -12694,17 +12862,18 @@ function ProfitCenter() {
                             {k.l}
                           </div>
                           <div
+                            className="kpi-num-md"
                             style={{
                               fontSize: 26,
                               fontWeight: 700,
                               fontFamily: mono,
                               letterSpacing: "-0.03em",
-                              color: k.c,
+                              color: spS.validN > 0 ? k.c : "var(--t3)",
                             }}
                           >
                             {k.v}
                           </div>
-                          {k.note && (
+                          {k.note && spS.validN > 0 && (
                             <div
                               style={{
                                 fontSize: 11,
@@ -12747,7 +12916,7 @@ function ProfitCenter() {
                           tip: "已扣分潤後平均每單實際貢獻",
                         },
                         {
-                          l: "退貨/退款排除",
+                          l: "退貨／退款排除",
                           v: `${spS.refundN} 筆`,
                           c: spS.refundN > 0 ? "var(--wn)" : "var(--t3)",
                           h: `${fmt$(spS.refundG)} 未計入營收`,
@@ -12774,17 +12943,18 @@ function ProfitCenter() {
                             {k.l}
                           </div>
                           <div
+                            className="kpi-num-md"
                             style={{
                               fontSize: 26,
                               fontWeight: 700,
                               fontFamily: mono,
                               letterSpacing: "-0.03em",
-                              color: k.c,
+                              color: spS.validN > 0 ? k.c : "var(--t3)",
                             }}
                           >
                             {k.v}
                           </div>
-                          {k.h && (
+                          {k.h && spS.validN > 0 && (
                             <div
                               style={{
                                 fontSize: 11,
@@ -13010,7 +13180,7 @@ function ProfitCenter() {
                             }
                             align="right"
                           >
-                            毛利
+                            通路後毛利
                           </SortTh>
                           <SortTh
                             sortKey="net"
@@ -13028,7 +13198,8 @@ function ProfitCenter() {
                             }
                             align="right"
                           >
-                            最終淨利
+                            {/* 蝦皮逐單淨利還沒扣分潤（分潤是整期一筆），跟 Hero 的分潤後淨利分開叫（2026-11-03 稽核） */}
+                            {isSL ? "最終淨利" : "分潤前淨利"}
                           </SortTh>
                         </tr>
                       </thead>
@@ -13567,7 +13738,7 @@ class ErrorBoundary extends React.Component {
             </div>
             <div style={{ fontSize: 12, color: "var(--t3)", lineHeight: 1.7 }}>
               資料仍在雲端與本機，沒有遺失。多半是某一筆訂單的欄位壞掉。
-              可以到左側「重置本期」清掉這一期再重新匯入報表，或先切到別的平台。
+              可以先切到別的平台；要修這一期，到官網／蝦皮／門市頁用「重置本期」清掉再重新匯入（手機沒有這顆鈕，要用電腦）。
             </div>
             <div
               style={{
