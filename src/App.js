@@ -691,17 +691,28 @@ const CSS = `
    2026-11-03 稽核）。統計卡數字隨視窗縮字，四欄改兩欄的斷點 1000→1100 */
 .g4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;}
 .g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
-.kpi-num{font-size:clamp(20px,2.3vw,30px)!important;white-space:nowrap;}
-.kpi-num-md{font-size:clamp(18px,2vw,26px)!important;white-space:nowrap;}
+.kpi-num{font-size:clamp(20px,2.1vw,30px)!important;white-space:nowrap;}
+.kpi-num-md{font-size:clamp(18px,1.85vw,26px)!important;white-space:nowrap;}
 @media(max-width:900px){.gm{grid-template-columns:1fr;}.side-sticky{position:static!important;}}
 @media(max-width:1100px){.g4{grid-template-columns:repeat(2,minmax(0,1fr));}.g3{grid-template-columns:repeat(2,minmax(0,1fr));}}
 /* 1024 左右的視窗：訂單表先收掉次要欄，淨利不用右滑才看得到 */
 @media(min-width:601px) and (max-width:1200px){
-  .tb-ord th:nth-child(4),.tb-ord td:nth-child(4),.tb-ord th:nth-child(6),.tb-ord td:nth-child(6){display:none;}
   .tb-ord-sl th:nth-child(3),.tb-ord-sl td:nth-child(3),.tb-ord-sl th:nth-child(4),.tb-ord-sl td:nth-child(4){display:none;}
   .tb-ord-sp th:nth-child(4),.tb-ord-sp td:nth-child(4),.tb-ord-sp th:nth-child(5),.tb-ord-sp td:nth-child(5){display:none;}
-  .tb-ord,.tb-ord-sl,.tb-ord-sp{min-width:0!important;}
-  .tb-ord th:nth-child(3),.tb-ord td:nth-child(3){width:150px!important;max-width:150px!important;}
+  .tb-ord-sl,.tb-ord-sp{min-width:0!important;}
+  .tb-ord-sp td:nth-child(2)>div{max-width:140px!important;}
+}
+/* 門市表欄多（minWidth 900），1201–1279 也放不下，範圍拉到 1279（1280 起完整九欄剛好放得下，
+   備註欄有客人名字要留）；商品欄內層 div 也要壓，只壓 td 壓不住 nowrap 的內容寬（2026-11-04 複審） */
+@media(min-width:601px) and (max-width:1279px){
+  .tb-ord th:nth-child(4),.tb-ord td:nth-child(4),.tb-ord th:nth-child(6),.tb-ord td:nth-child(6){display:none;}
+  .tb-ord{min-width:0!important;}
+  .tb-ord td:nth-child(3)>div{max-width:130px!important;}
+}
+/* 1100 以下側欄還在、表格更窄：門市再收毛利欄（開單異常 ⚠ 改顯示在淨利欄，同手機） */
+@media(min-width:601px) and (max-width:1100px){
+  .tb-ord th:nth-child(7),.tb-ord td:nth-child(7){display:none;}
+  .ord-warn-m{display:inline!important;}
 }
 @media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}.app-header{position:static!important;}}
 .gcmp{display:grid;grid-template-columns:1fr 1px 1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
@@ -1473,7 +1484,7 @@ function POSDashboard({
     ? "六通路"
     : POS_CHANNELS.filter((c) => included.includes(c.key))
         .map((c) => c.label)
-        .join("＋") || "未計入任何通路";
+        .join("＋");
   const netColor = posNetColor(s.netMargin, posTarget);
   const covColor = posCovColor(s.costCoverage);
   const cth = {
@@ -1568,7 +1579,7 @@ function POSDashboard({
     const rows = [
       ["平台", "門市"],
       ["期間", periodLabel],
-      ["計入通路", scopeLabel],
+      ["計入通路", scopeLabel || "未勾選通路"],
       ["有效訂單", s.valid],
       ["營收", r0(s.rev)],
       ["成本齊全訂單營收", r0(s.coveredRev)],
@@ -1719,7 +1730,7 @@ function POSDashboard({
               即時 營業費 {opExpense}%・稅 {taxRate}%（只課開票單）
             </Tag>
           )}
-          <Tag v="default">計入 {scopeLabel || "—"}</Tag>
+          <Tag v="default">{scopeLabel ? `計入 ${scopeLabel}` : "未勾選通路"}</Tag>
           {/* 已鎖定的期間成本已凍結，不再提醒補成本（老闆 2026-09-03：
               鎖定後還叫人回頭處理以前的沒必要） */}
           {missN > 0 && !isLocked && (
@@ -1789,7 +1800,7 @@ function POSDashboard({
               {fmt$(s.coveredNet)}
             </div>
             <div style={{ fontSize: 12, color: "var(--t3)", marginTop: 8 }}>
-              營收：{fmt$(s.rev)}（{scopeLabel || "—"}） ｜ {s.valid} 筆 ｜ 客單{" "}
+              營收：{fmt$(s.rev)}（{scopeLabel || "未勾選通路"}） ｜ {s.valid} 筆 ｜ 客單{" "}
               {fmt$(s.aov)}
               {s.coveredRev > 0
                 ? ` ｜ 單筆平均淨利 ${fmt$(
@@ -1929,7 +1940,7 @@ function POSDashboard({
           成本覆蓋率降為毛利率卡的副標（<100% 才顯示、變色提醒），開票比例併進淨利率卡副標 */}
       <div className="g3 f2">
         <PosKpi
-          label={`門市營收（${scopeLabel || "無通路"}）`}
+          label={`門市營收（${scopeLabel || "未勾選通路"}）`}
           value={fmt$(s.rev)}
           sub={`${s.valid} 筆 ｜ 客單 ${fmt$(s.aov)}${
             s.cancelledTotal > 0 ? ` ｜ 取消 ${fmt$(s.cancelledTotal)}` : ""
@@ -2254,7 +2265,9 @@ function POSDashboard({
               <span style={{ fontSize: 10, color: "var(--t4)" }}>
                 {/* 用「本期有單且已勾選」的通路數，與上方「計入 …」標籤同一個口徑；
                     勾了但本期沒單的通路不算，否則數字對不上使用者看到的東西 */}
-                （只顯示 {scopeLabel || "—"}，要看其他通路請在上方勾起來）
+                {scopeLabel
+                  ? `（只顯示 ${scopeLabel}，要看其他通路請在上方勾起來）`
+                  : "（沒有勾選任何通路，要看請在上方勾起來）"}
               </span>
             )}
           </div>
@@ -2668,6 +2681,7 @@ function POSDashboard({
 /* ─── Overview Dashboard ────────────────────────────────────── */
 function OverviewDashboard({
   syncing,
+  offline,
   slData,
   spData,
   posData,
@@ -2855,7 +2869,7 @@ function OverviewDashboard({
     }
     if (posS && posS.noCostCount > 0)
       list.push({
-        level: posS.coverage < 0.6 ? "error" : "warn",
+        level: roundRate(posS.coverage) < 0.6 ? "error" : "warn",
         /* posS 是六通路合計，不是「門市（現場零售）」那張卡（2026-11-03 稽核） */
         platform: "門市六通路",
         msg: `${posS.noCostCount} 筆（${fmt$(
@@ -3143,7 +3157,7 @@ function OverviewDashboard({
         <BarChart3 size={40} color="var(--s4)" />
         <div style={{ fontSize: 15, fontWeight: 700, color: "var(--t3)" }}>
           {/* 雲端還在下載時不是「沒資料」，不要叫人上傳（2026-11-03 稽核） */}
-          {syncing ? "雲端資料載入中…" : "尚無任何資料"}
+          {syncing ? (offline ? "目前離線，連上網路後才載得到資料" : "雲端資料載入中…") : "尚無任何資料"}
         </div>
         {!syncing && (
           <div style={{ fontSize: 12, color: "var(--t4)" }}>
@@ -7610,7 +7624,7 @@ function ProfitCenter() {
     /* 監聽器已中斷＝匯入了也存不回雲端，別跳成功（二輪複審 R2A-2） */
     if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return; }
     if (!cReady) {
-      toast("雲端資料還在同步中，請等右上角同步燈變綠再匯入", {
+      toast(onlineRef.current ? "雲端資料還在同步中，請等右上角同步燈變綠再匯入" : "目前離線，連上網路後再匯入", {
         type: "warning",
         duration: 6000,
       });
@@ -8362,7 +8376,10 @@ function ProfitCenter() {
     const netMargin = tG > 0 ? afterComm / tG : 0;
 
     let badge = { label: "虧損", color: "var(--dn)" };
-    if (roundRate(netMargin) >= targetNet) {
+    if (validN === 0) {
+      /* 沒訂單不下判斷（以前每月 1 號到匯報表前都顯示紅色「虧損」，2026-11-04 複審） */
+      badge = { label: "無資料", color: "var(--t4)" };
+    } else if (roundRate(netMargin) >= targetNet) {
       badge = { label: "優秀", color: "var(--up)" };
     } else if (roundRate(netMargin) >= targetNet * 0.6) {
       /* 官網／門市的「穩健」＝達標；蝦皮這段是沒達標，不能用同一個字（F27） */
@@ -9172,7 +9189,7 @@ function ProfitCenter() {
        否則首份 meta 快照一到就把剛還原的整張表蓋回雲端版 */
     if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); e.target.value = ""; return; }
     if (!cReady) {
-      toast("雲端同步中，請等右上角同步燈變綠再還原", { type: "warning" });
+      toast(onlineRef.current ? "雲端同步中，請等右上角同步燈變綠再還原" : "目前離線，連上網路後再還原", { type: "warning" });
       e.target.value = "";
       return;
     }
@@ -9633,7 +9650,7 @@ function ProfitCenter() {
     (key, n) => {
       if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return false; }
       if (!cReady) {
-        toast("雲端同步中，請稍候再填成本", { type: "warning" });
+        toast(onlineRef.current ? "雲端同步中，請稍候再填成本" : "目前離線，連上網路後再填成本", { type: "warning" });
         return false;
       }
       if (n < 0) return false;
@@ -9672,7 +9689,7 @@ function ProfitCenter() {
     (field, v) => {
       if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return false; }
       if (!cReady) {
-        toast("雲端同步中，請稍候再改參數", { type: "warning" });
+        toast(onlineRef.current ? "雲端同步中，請稍候再改參數" : "目前離線，連上網路後再改參數", { type: "warning" });
         return false;
       }
       /* 費率／目標一律要是 0 以上的數字：空值或負數寫進去，未鎖月份的淨利會整批失真（F07） */
@@ -9791,7 +9808,7 @@ function ProfitCenter() {
     (key, v) => {
       if (listenerDead.current) { toast("雲端讀取中斷，請重新整理頁面後再操作", { type: "error" }); return false; }
       if (!cReady) {
-        toast("雲端同步中，請稍候再設定成本率", { type: "warning" });
+        toast(onlineRef.current ? "雲端同步中，請稍候再設定成本率" : "目前離線，連上網路後再設定成本率", { type: "warning" });
         return false;
       }
       if (v < 0) return false;
@@ -11701,7 +11718,9 @@ function ProfitCenter() {
                     color: "var(--wn)",
                   }}
                 >
-                  雲端同步中：先顯示這台裝置的暫存，數字可能還沒更新
+                  {online
+                    ? "雲端同步中：先顯示這台裝置的暫存，數字可能還沒更新"
+                    : "目前離線：顯示的是這台裝置的暫存（只有最近幾個月），數字可能不是最新"}
                 </div>
               )}
             {/* 主內容區單獨包一層邊界：切換平台時 key 變動＝自動重置錯誤狀態 */}
@@ -11709,6 +11728,7 @@ function ProfitCenter() {
             {isOverview ? (
               <OverviewDashboard
                 syncing={!cReady}
+                offline={!online}
                 slData={slData}
                 spData={spData}
                 posData={posData}
@@ -11745,7 +11765,7 @@ function ProfitCenter() {
                 <div
                   style={{ fontSize: 15, fontWeight: 700, color: "var(--t3)" }}
                 >
-                  {cReady ? "等待財務數據注入" : "雲端資料載入中…"}
+                  {cReady ? "等待財務數據注入" : online ? "雲端資料載入中…" : "目前離線，連上網路後才載得到資料"}
                 </div>
                 {cReady && (
                   <div style={{ fontSize: 12, color: "var(--t4)" }}>
@@ -11992,7 +12012,9 @@ function ProfitCenter() {
                               fontFamily: mono,
                               lineHeight: 1,
                               color:
-                                slD.gapVal >= 0
+                                slD.valid === 0
+                                  ? "var(--t4)"
+                                  : slD.gapVal >= 0
                                   ? "var(--up)"
                                   : roundRate(slD.trueNetMargin) >=
                                     slD.targetNetRate - 0.03
@@ -12000,7 +12022,8 @@ function ProfitCenter() {
                                   : "var(--dn)",
                             }}
                           >
-                            {fmtP(slD.trueNetMargin)}
+                            {/* 沒訂單顯示「—」，照門市的寫法（2026-11-04 複審） */}
+                            {slD.valid === 0 ? "—" : fmtP(slD.trueNetMargin)}
                           </div>
                           <div
                             style={{
@@ -12013,11 +12036,16 @@ function ProfitCenter() {
                             <span
                               style={{
                                 color:
-                                  slD.gapVal >= 0 ? "var(--up)" : "var(--dn)",
+                                  slD.valid === 0
+                                    ? "var(--t4)"
+                                    : slD.gapVal >= 0
+                                    ? "var(--up)"
+                                    : "var(--dn)",
                               }}
                             >
-                              {slD.gapVal >= 0 ? "+" : ""}
-                              {slD.gapVal.toFixed(2)}%
+                              {slD.valid === 0
+                                ? "—"
+                                : `${slD.gapVal >= 0 ? "+" : ""}${slD.gapVal.toFixed(2)}%`}
                             </span>
                           </div>
                         </div>
@@ -12428,7 +12456,9 @@ function ProfitCenter() {
                       >
                         <Tag
                           v={
-                            roundRate(spS.netMargin) >= spS.targetNet
+                            spS.validN === 0
+                              ? "default"
+                              : roundRate(spS.netMargin) >= spS.targetNet
                               ? "ok"
                               : spS.netMargin > 0
                               ? "warn"
@@ -12541,7 +12571,9 @@ function ProfitCenter() {
                               fontFamily: mono,
                               lineHeight: 1,
                               color:
-                                roundRate(spS.netMargin) >= spS.targetNet
+                                spS.validN === 0
+                                  ? "var(--t4)"
+                                  : roundRate(spS.netMargin) >= spS.targetNet
                                   ? "var(--up)"
                                   : roundRate(spS.netMargin) >= spS.targetNet * 0.6
                                   ? "var(--orange)"
@@ -12550,7 +12582,7 @@ function ProfitCenter() {
                                   : "var(--dn)",
                             }}
                           >
-                            {fmtP(spS.netMargin)}
+                            {spS.validN === 0 ? "—" : fmtP(spS.netMargin)}
                           </div>
                           <div
                             style={{
@@ -12920,6 +12952,8 @@ function ProfitCenter() {
                           v: `${spS.refundN} 筆`,
                           c: spS.refundN > 0 ? "var(--wn)" : "var(--t3)",
                           h: `${fmt$(spS.refundG)} 未計入營收`,
+                          /* 退款排除是事實不是門檻判定：期間只有退款單時也要顯示（2026-11-04 複審） */
+                          fact: true,
                         },
                       ].map((k, i) => (
                         <div
@@ -12949,12 +12983,12 @@ function ProfitCenter() {
                               fontWeight: 700,
                               fontFamily: mono,
                               letterSpacing: "-0.03em",
-                              color: spS.validN > 0 ? k.c : "var(--t3)",
+                              color: spS.validN > 0 || k.fact ? k.c : "var(--t3)",
                             }}
                           >
                             {k.v}
                           </div>
-                          {k.h && spS.validN > 0 && (
+                          {k.h && (spS.validN > 0 || k.fact) && (
                             <div
                               style={{
                                 fontSize: 11,
