@@ -6371,6 +6371,27 @@ function ProfitCenter() {
        以每個月份 doc 的 ordersJson 內容比對——新增／修改／刪除 doc 都會被偵測到；
        hash 只在真的套用時才整組換掉，自己剛寫入的內容本來就等於 hash → 不會重套自己 */
     const listenMonthly = (coll, setter, hashesRef, key, label) => {
+      /* 雲端月份 doc 讀不進來（ordersJson 空白、壞掉、不是物件）＝回 null。這種月份記在
+         hashesRef.bad：存檔時不寫也不刪。以前首載跳過它卻把 hash 留著，第一次存檔就被當成
+         「本機刪掉這個月」把雲端那個月刪掉（2026-11-04 複審，老闆「怎修你修」） */
+      const parseMo = (json) => {
+        if (!json) return null;
+        try {
+          const o = JSON.parse(json);
+          return o && typeof o === "object" && !Array.isArray(o) ? o : null;
+        } catch {
+          return null;
+        }
+      };
+      const warnBad = (yms) =>
+        setTimeout(
+          () =>
+            toast(
+              `雲端${label} ${yms.join("、")} 的訂單讀不進來：這幾個月先不存也不刪（雲端資料還在）`,
+              { type: "error", duration: 15000 }
+            ),
+          0
+        );
       let first = true;
       const done = () => {
         if (first) {
@@ -6402,15 +6423,23 @@ function ProfitCenter() {
               /* 首載：雲端為準、整份取代——本機 localStorage 可能是別台改過之前的舊版，
                  不能拿來蓋雲端（2026-09-03 M26） */
               const all = {};
-              Object.values(next).forEach((json) => {
-                if (!json) return;
-                try {
-                  Object.assign(all, JSON.parse(json));
-                } catch {}
+              const okHash = {};
+              const bad = [];
+              Object.entries(next).forEach(([ym, json]) => {
+                const mo = parseMo(json);
+                if (!mo) {
+                  bad.push(ym);
+                  return;
+                }
+                Object.assign(all, mo);
+                okHash[ym] = json;
               });
-              hashesRef.current = next;
+              /* 讀不進來的月份不進 hash：存檔的刪除只看 hash，就不會把它刪掉 */
+              hashesRef.bad = new Set(bad);
+              hashesRef.current = okHash;
               setter(all);
               setLastSyncAt(Date.now());
+              if (bad.length) warnBad(bad);
             } else if (changed) {
               /* 之後的快照：逐月合併，不整包取代。本機在 900ms 防抖內還沒寫出去的改動
                  （匯入／鎖定／發票覆寫／重置）不能被別台的快照沖掉（2026-09-04 delta 審查 3/3）。
@@ -6419,6 +6448,7 @@ function ProfitCenter() {
                 const localBy = groupOrdersByMonth(local);
                 const merged = {};
                 const newHash = {};
+                const newBad = [];
                 let conflicts = 0;
                 new Set([...Object.keys(next), ...Object.keys(localBy)]).forEach((ym) => {
                   const cloudJson = next[ym];
@@ -6427,6 +6457,7 @@ function ProfitCenter() {
                   const localJson = localMo ? JSON.stringify(localMo) : undefined;
                   const localDirty = localJson !== oldHash;
                   if (cloudJson === undefined) {
+                    hashesRef.bad?.delete(ym);
                     /* 雲端沒這個月（別台重置）：本機沒改→跟著刪；本機有改→留著，之後會寫上去 */
                     if (localDirty && localMo) {
                       Object.assign(merged, localMo);
@@ -6440,10 +6471,16 @@ function ProfitCenter() {
                     newHash[ym] = cloudJson;
                     return;
                   }
-                  let cloudMo = {};
-                  try {
-                    cloudMo = JSON.parse(cloudJson);
-                  } catch {}
+                  const cloudMo = parseMo(cloudJson);
+                  if (!cloudMo) {
+                    /* 雲端這個月讀不進來：本機照舊、不記 hash（存檔不寫不刪），只在剛壞掉時提醒一次 */
+                    if (!hashesRef.bad) hashesRef.bad = new Set();
+                    if (!hashesRef.bad.has(ym)) newBad.push(ym);
+                    hashesRef.bad.add(ym);
+                    if (localMo) Object.assign(merged, localMo);
+                    return;
+                  }
+                  hashesRef.bad?.delete(ym);
                   if (!localDirty || localJson === cloudJson) {
                     /* 雲端變了、本機沒改（或改成一模一樣＝自己的 ack 先到）：吃雲端 */
                     Object.assign(merged, cloudMo);
@@ -6457,6 +6494,7 @@ function ProfitCenter() {
                   if (oldHash !== undefined) newHash[ym] = oldHash;
                 });
                 hashesRef.current = newHash;
+                if (newBad.length) warnBad(newBad);
                 if (conflicts)
                   setTimeout(
                     () =>
@@ -6587,6 +6625,8 @@ function ProfitCenter() {
           if (lastSavedOrders.current[refKey] === orders) return;
           const byMonth = groupOrdersByMonth(orders);
           Object.entries(byMonth).forEach(([ym, mo]) => {
+            /* 雲端這個月讀不進來：先不寫，免得用本機的版本蓋掉雲端（雲端恢復後監聽會自動接回） */
+            if (hashesRef.bad?.has(ym)) return;
             const json = JSON.stringify(mo);
             if (hashesRef.current[ym] === json) return;
             writes.push(
@@ -6601,7 +6641,7 @@ function ProfitCenter() {
           });
           /* 偵測已刪除的月份（重置本期／清空最後一筆） */
           Object.keys(hashesRef.current).forEach((ym) => {
-            if (!byMonth[ym]) {
+            if (!byMonth[ym] && !hashesRef.bad?.has(ym)) {
               writes.push(
                 deleteDoc(doc(db, coll, ym)).then(() => {
                   delete hashesRef.current[ym];
