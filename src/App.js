@@ -1788,7 +1788,7 @@ function POSDashboard({
             <Zap size={10} />{" "}
             {s.coveredRev > 0
               ? gapVal >= 0
-                ? "穩健"
+                ? "達標"
                 : roundRate(s.netMargin) >= 0.05
                 ? "未達標"
                 : "警告"
@@ -3294,7 +3294,7 @@ function OverviewDashboard({
     totalRev === 0
       ? { label: "尚無資料", c: "var(--t3)", bg: "var(--s2)", bd: "var(--s3)" }
       : roundRate(totalNetMargin) >= OVERALL_TARGET
-      ? { label: "整體健康", c: "var(--up)", bg: "var(--up-dim)", bd: "var(--up-bdr)" }
+      ? { label: "整體達標", c: "var(--up)", bg: "var(--up-dim)", bd: "var(--up-bdr)" }
       : roundRate(totalNetMargin) >= OVERALL_RED
       ? { label: "成長油門帶", c: "var(--wn)", bg: "var(--wn-dim)", bd: "var(--wn-bdr)" }
       : totalNetMargin > 0
@@ -3801,7 +3801,9 @@ function OverviewDashboard({
                       }}
                     />
                     <span style={{ color: "var(--t2)" }}>{p.l}</span>
-                    <span style={{ fontFamily: mono, color: empty ? "var(--t4)" : p.c }}>
+                    {/* 佔比用中性字：平台色只留在前面的色塊（蝦皮橘紅當字像虧損、
+                        企業天藍／電話青綠當小字只有 3.3–3.7:1，老闆 2026-11-12 裁示） */}
+                    <span style={{ fontFamily: mono, color: empty ? "var(--t4)" : "var(--t1)" }}>
                       {(share * 100).toFixed(1)}%
                     </span>
                     {/* 金額在手機隱藏（.lg-amt）：下面各平台卡片與通路卡片都看得到 */}
@@ -3903,7 +3905,7 @@ function OverviewDashboard({
                       style={{
                         fontSize: 10,
                         fontWeight: 700,
-                        color: p.color,
+                        color: "var(--t2)",
                         background: "transparent",
                         border: `1px solid ${p.color}44`,
                         borderRadius: 6,
@@ -3925,18 +3927,20 @@ function OverviewDashboard({
                       {
                         l: "淨利",
                         v: fmt$(p.net),
-                        c: p.net >= 0 ? p.color : "var(--dn)",
+                        /* 金額：賺＝一般字、虧＝紅（跟上方「合計淨利」同一套）；
+                           達不達標看旁邊的淨利率 */
+                        c: p.net >= 0 ? undefined : "var(--dn)",
                       },
                       {
                         l: "淨利率",
                         v: p.empty ? "—" : fmtP(p.margin),
-                        /* 三段色：達標＝平台色、未達標但仍賺＝黃、虧損＝紅。
-                           原本兩段色會讓虧損顯示成黃色，與同頁下方六通路表的
-                           posNetColor 自相矛盾 */
+                        /* 三段狀態色：達標＝綠、未達標但仍賺＝黃、虧損＝紅（跟上方綜合淨利率、
+                           下方六通路表同一套）。以前達標用平台色，蝦皮的橘紅看起來像虧損
+                           （老闆 2026-11-12 裁示改狀態色，平台色只留在色塊） */
                         c: p.empty
                           ? "var(--t4)"
                           : roundRate(p.margin) >= p.target
-                          ? p.color
+                          ? "var(--up)"
                           : p.margin > 0
                           ? "var(--wn)"
                           : "var(--dn)",
@@ -3962,7 +3966,7 @@ function OverviewDashboard({
                           p.rev === 0
                             ? "var(--t2)"
                             : opexBandOf(p.opexRate) === 0
-                            ? p.color
+                            ? "var(--up)"
                             : opexBandOf(p.opexRate) <= 2
                             ? "var(--wn)"
                             : "var(--dn)",
@@ -4160,7 +4164,7 @@ function OverviewDashboard({
                 marginLeft: "auto",
                 fontSize: 10,
                 fontWeight: 700,
-                color: posC,
+                color: "var(--t2)",
                 background: "transparent",
                 border: `1px solid ${posC}44`,
                 borderRadius: 6,
@@ -4816,7 +4820,19 @@ function OverviewDashboard({
                       }}
                       title={`${p.name}${p.option ? `（${p.option}）` : ""}`}
                     >
-                      <span style={{ color: barC, fontWeight: 700, marginRight: 6 }}>
+                      {/* 平台用色塊標，字用中性色（跟上面三平台卡的標題同一種做法） */}
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: 7,
+                          height: 7,
+                          borderRadius: 2,
+                          background: barC,
+                          opacity: p.sl ? 1 : 0.8,
+                          marginRight: 5,
+                        }}
+                      />
+                      <span style={{ color: "var(--t2)", fontWeight: 700, marginRight: 6 }}>
                         {p.sl ? "官網" : "蝦皮"}
                       </span>
                       {p.name}
@@ -4842,7 +4858,7 @@ function OverviewDashboard({
                       fontSize: 11,
                       fontFamily: mono,
                       flexShrink: 0,
-                      color: barC,
+                      color: "var(--t2)",
                       fontWeight: 700,
                       minWidth: 44,
                       textAlign: "right",
@@ -8555,9 +8571,10 @@ function ProfitCenter() {
       /* 沒訂單不下判斷（以前每月 1 號到匯報表前都顯示紅色「虧損」，2026-11-04 複審） */
       badge = { label: "無資料", color: "var(--t4)" };
     } else if (roundRate(netMargin) >= targetNet) {
-      badge = { label: "優秀", color: "var(--up)" };
+      /* 達標的標籤四頁同一個詞「達標」（總覽「整體達標」）：以前官網／門市叫「穩健」、
+         蝦皮叫「優秀」、總覽叫「整體健康」（老闆 2026-11-12 裁示統一） */
+      badge = { label: "達標", color: "var(--up)" };
     } else if (roundRate(netMargin) >= targetNet * 0.6) {
-      /* 官網／門市的「穩健」＝達標；蝦皮這段是沒達標，不能用同一個字（F27） */
       badge = { label: "未達標", color: "var(--orange)" };
     } else if (netMargin > 0) {
       badge = { label: "偏弱", color: "var(--wn)" };
@@ -12092,7 +12109,7 @@ function ProfitCenter() {
                           {slD.valid === 0
                             ? "無資料"
                             : slD.gapVal >= 0
-                            ? "穩健"
+                            ? "達標"
                             : roundRate(slD.trueNetMargin) >= slD.targetNetRate - 0.03
                             ? "未達標"
                             : "警告"}
