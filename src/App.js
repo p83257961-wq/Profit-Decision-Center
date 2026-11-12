@@ -614,8 +614,10 @@ const useDebounced = (value, delay = 200) => {
 
 /* 窄螢幕（手機）判定：只給「CSS 改不動」的東西用——圖表要吃 width/height 數字。
    桌機一律回 false，走的是和以前完全一樣的那條路徑（老闆 2026-09-06：電腦版不動）。
-   版面壓縮一律寫在 CSS 的 @media(max-width:600px) 裡，不要在這裡長條件。 */
-const useIsNarrow = (q = "(max-width:600px)") => {
+   版面壓縮一律寫在 CSS 的 @media(max-width:600.98px) 裡，不要在這裡長條件。
+   斷點一律寫 N.98：視窗寬度會有小數（Windows 縮放 125% 時 751 個實體像素＝600.8），
+   寫成 max-width:600px 配 min-width:601px 的話 600～601 之間兩邊都不套用（2026-11-12 正式站實測）。 */
+const useIsNarrow = (q = "(max-width:600.98px)") => {
   const [v, setV] = useState(
     () => typeof window !== "undefined" && !!window.matchMedia?.(q).matches
   );
@@ -653,7 +655,7 @@ const CSS = `
   --header-bg:rgba(255,255,255,0.92);
   --bar-track:#EAEAE6;
   --row-loss:rgba(192,57,43,0.04);
-  --sp-accent:#EE4D2D;--sp-accent-dim:rgba(238,77,45,0.06);--sp-accent-bdr:rgba(238,77,45,0.2);
+  --sp-accent:#EE4D2D;--sp-accent-dim:rgba(238,77,45,0.06);--sp-accent-bdr:rgba(238,77,45,0.2);--sp-tab:#D63F1E;
   --pos-accent:#7B5EA7;--pos-accent-dim:rgba(123,94,167,0.06);--pos-accent-bdr:rgba(123,94,167,0.2);
 }
 [data-theme="dark"]{
@@ -661,13 +663,13 @@ const CSS = `
   --t1:#E8E6E1;--t2:#9DA0A8;--t3:#7E838E;--t4:#656A73;
   --accent:#2ECC71;--accent-dim:rgba(46,204,113,0.08);--accent-bdr:rgba(46,204,113,0.2);--accent-text:#2ECC71;
   --up:#2ECC71;--up-dim:rgba(46,204,113,0.08);--up-bdr:rgba(46,204,113,0.2);
-  --dn:#E74C3C;--dn-dim:rgba(231,76,60,0.08);--dn-bdr:rgba(231,76,60,0.2);
+  --dn:#EC5A4A;--dn-dim:rgba(236,90,74,0.08);--dn-bdr:rgba(236,90,74,0.2);
   --wn:#E67E22;--wn-dim:rgba(230,126,34,0.08);--wn-bdr:rgba(230,126,34,0.2);
   --blue:#3498DB;--purple:#9B7FCA;--orange:#F0A030;--gold:#C9A84C;
   --header-bg:rgba(8,10,14,0.88);
   --bar-track:#1C212B;
   --row-loss:rgba(231,76,60,0.07);
-  --sp-accent:#FF6533;--sp-accent-dim:rgba(255,101,51,0.08);--sp-accent-bdr:rgba(255,101,51,0.22);
+  --sp-accent:#FF6533;--sp-accent-dim:rgba(255,101,51,0.08);--sp-accent-bdr:rgba(255,101,51,0.22);--sp-tab:#FF6533;
   --pos-accent:#9B7FCA;--pos-accent-dim:rgba(155,127,202,0.08);--pos-accent-bdr:rgba(155,127,202,0.22);
 }
 /* 文字階層（2026-11-12 掃描）：t3＝說明、標籤、判定句等「要讀的小字」，對白底與 s2 底都 ≥4.5:1；
@@ -695,10 +697,10 @@ const CSS = `
 .g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
 .kpi-num{font-size:clamp(20px,2.1vw,30px)!important;white-space:nowrap;}
 .kpi-num-md{font-size:clamp(18px,1.85vw,26px)!important;white-space:nowrap;}
-@media(max-width:900px){.gm{grid-template-columns:1fr;}.side-sticky{position:static!important;}}
-@media(max-width:1100px){.g4{grid-template-columns:repeat(2,minmax(0,1fr));}.g3{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:900.98px){.gm{grid-template-columns:1fr;}.side-sticky{position:static!important;}}
+@media(max-width:1100.98px){.g4{grid-template-columns:repeat(2,minmax(0,1fr));}.g3{grid-template-columns:repeat(2,minmax(0,1fr));}}
 /* 1024 左右的視窗：訂單表先收掉次要欄，淨利不用右滑才看得到 */
-@media(min-width:601px) and (max-width:1200px){
+@media(min-width:601px) and (max-width:1200.98px){
   .tb-ord-sl th:nth-child(3),.tb-ord-sl td:nth-child(3),.tb-ord-sl th:nth-child(4),.tb-ord-sl td:nth-child(4){display:none;}
   .tb-ord-sp th:nth-child(4),.tb-ord-sp td:nth-child(4),.tb-ord-sp th:nth-child(5),.tb-ord-sp td:nth-child(5){display:none;}
   .tb-ord-sl,.tb-ord-sp{min-width:0!important;}
@@ -706,13 +708,13 @@ const CSS = `
 }
 /* 門市表欄多（minWidth 900），1201–1279 也放不下，範圍拉到 1279（1280 起完整九欄剛好放得下，
    備註欄有客人名字要留）；商品欄內層 div 也要壓，只壓 td 壓不住 nowrap 的內容寬（2026-11-04 複審） */
-@media(min-width:601px) and (max-width:1279px){
+@media(min-width:601px) and (max-width:1279.98px){
   .tb-ord th:nth-child(4),.tb-ord td:nth-child(4),.tb-ord th:nth-child(6),.tb-ord td:nth-child(6){display:none;}
   .tb-ord{min-width:0!important;}
   .tb-ord td:nth-child(3)>div{max-width:130px!important;}
 }
 /* 1100 以下側欄還在、表格更窄：門市再收毛利欄（開單異常 ⚠ 改顯示在淨利欄，同手機） */
-@media(min-width:601px) and (max-width:1100px){
+@media(min-width:601px) and (max-width:1100.98px){
   .tb-ord th:nth-child(7),.tb-ord td:nth-child(7){display:none;}
   .ord-warn-m{display:inline!important;}
 }
@@ -721,13 +723,13 @@ const CSS = `
    「單位成本」（三頁都是）、門市通路拆解的「開票」在畫面外、損益分解的金額在 901 以下互相壓到
    （蝦皮整年兩個數字重疊 10–17px）。規則只關在這個寬度帶，1280 以上與手機（≤600）都不變 */
 /* 成本資料庫：解除最小寬＋內距 14→8 就放得下全部七欄 */
-@media(min-width:601px) and (max-width:1279px){
+@media(min-width:601px) and (max-width:1279.98px){
   .tb-cost{min-width:0!important;}
   .tb-cost th,.tb-cost td{padding-left:8px!important;padding-right:8px!important;}
   .tb-cost th{white-space:nowrap;}
 }
 /* 1100 以下側欄還在、表格更窄：收掉毛利貢獻／毛利率（補成本用不到），品名欄收窄 */
-@media(min-width:601px) and (max-width:1100px){
+@media(min-width:601px) and (max-width:1100.98px){
   .tb-cost th:nth-child(4),.tb-cost td:nth-child(4),.tb-cost th:nth-child(5),.tb-cost td:nth-child(5){display:none;}
   .tb-cost td:nth-child(1){max-width:190px!important;}
   /* 品名下面那行「久未售出・最後 2026-02-10（N 天前）」在收窄的欄裡會被切掉尾巴，改成可換行 */
@@ -736,7 +738,7 @@ const CSS = `
   .tb-ch{min-width:0!important;}
   .tb-ch th,.tb-ch td{padding-left:6px!important;padding-right:6px!important;}
 }
-@media(min-width:601px) and (max-width:1023px){
+@media(min-width:601px) and (max-width:1023.98px){
   /* 再窄：成本資料庫連銷量也收（同手機：品名／規格／單位成本／配方與刪除） */
   .tb-cost th:nth-child(3),.tb-cost td:nth-child(3){display:none;}
   /* 通路拆解收掉客單、成本覆蓋（覆蓋不足時毛利率卡的副標會講），通路名可換行 */
@@ -752,27 +754,27 @@ const CSS = `
 }
 /* 損益分解：1000 以下一列兩格、拿掉箭頭（跟手機同一個排法，字級維持桌機的 20px）；
    1001–1176 只把字縮一點，門市五格、整年七位數也不會互相碰到 */
-@media(min-width:601px) and (max-width:1000px){
+@media(min-width:601px) and (max-width:1000.98px){
   .wf-cell{flex:1 1 40%!important;min-width:0!important;margin-bottom:10px;}
   .wf-arr{display:none!important;}
 }
-@media(min-width:1001px) and (max-width:1176px){
+@media(min-width:1001px) and (max-width:1176.98px){
   .wf-num{font-size:clamp(15px,1.55vw,20px)!important;}
 }
 /* 總覽六通路表：601–760 這段還沒吃到手機規則，640 的最小寬會要右滑 */
-@media(min-width:601px) and (max-width:760px){
+@media(min-width:601px) and (max-width:760.98px){
   .tb-ov{min-width:0!important;}
   .tb-ov th,.tb-ov td{padding-left:6px!important;padding-right:6px!important;}
   .tb-ov th:nth-child(4),.tb-ov td:nth-child(4),.tb-ov th:nth-child(5),.tb-ov td:nth-child(5),.tb-ov th:nth-child(8),.tb-ov td:nth-child(8){display:none;}
   .tb-ov td:first-child{min-width:110px!important;}
 }
-@media(max-width:600px){.g4,.g3{grid-template-columns:1fr;}.app-header{position:static!important;}}
+@media(max-width:600.98px){.g4,.g3{grid-template-columns:1fr;}.app-header{position:static!important;}}
 .gcmp{display:grid;grid-template-columns:1fr 1px 1fr 1px 1fr;border-top:1px solid var(--s3);padding-top:20px;}
 .gcmp-c{padding:0 16px;min-width:0;}
 .gcmp-c:first-child{padding-left:0;}
 .gcmp-c:last-child{padding-right:0;}
 .gcmp-div{background:var(--s3);}
-@media(max-width:1000px){.gcmp{grid-template-columns:1fr;gap:20px;}.gcmp-div{display:none;}.gcmp-c{padding:0;}}
+@media(max-width:1000.98px){.gcmp{grid-template-columns:1fr;gap:20px;}.gcmp-div{display:none;}.gcmp-c{padding:0;}}
 .hero-num{font-size:clamp(40px,8vw,72px);overflow-wrap:anywhere;}
 .hero-num-md{font-size:clamp(36px,7vw,64px);overflow-wrap:anywhere;}
 .hero-pct{font-size:clamp(30px,5.5vw,48px);}
@@ -806,7 +808,7 @@ input[type=checkbox]{width:16px;height:16px;flex:0 0 auto;}
    五個原則：①匯入／重置手機用不到＝隱藏，參數側欄移到資料下面
    ②外框與卡片內距減半 ③大字降一級 ④圖表縮進容器（圓餅另由 narrow 判斷換小尺寸）
    ⑤寬表格隱藏次要欄。要恢復哪一項就刪掉對應那行。 */
-@media(max-width:600px){
+@media(max-width:600.98px){
   .page-wrap{padding:12px 12px 48px!important;}
   .hd-wrap{padding:8px 12px!important;gap:6px!important;}
   /* 卡片內距 24→14。比對的是 inline style 字串，日後若把 padding 改成別的值，
@@ -887,8 +889,21 @@ input[type=checkbox]{width:16px;height:16px;flex:0 0 auto;}
   .tb-ratio th{white-space:normal;}
 }
 /* 360 寬的手機（Android 常見）：門市訂單表通路欄再收一點，不然多出 7px 要橫滑（2026-11-12 掃描） */
-@media(max-width:380px){
+@media(max-width:400.98px){
   .tb-ord td:nth-child(2){min-width:56px;}
+  /* 360 寬原本只剩 0–2px 餘裕（真手機的等寬字型比電腦寬一點就會超出），內距 6→4 多留 16px；
+     範圍拉到 400，381–400 這段原本也只剩 7px（2026-11-12 第三輪量餘裕） */
+  .tb-ord th,.tb-ord td{padding-left:4px!important;padding-right:4px!important;}
+}
+/* 359 以下（舊款手機、或開了「放大顯示」的手機，最窄 320）：總覽六通路表多 22px、門市訂單表多 41px
+   要橫滑。兩張表內距再收、金額字小一級、單號可折行（2026-11-12 第三輪，量到 320 為止） */
+@media(max-width:359.98px){
+  /* 門市的泛稱成本率表、成本資料庫在 320 只剩 1px／5px 餘裕，一起收內距 */
+  .tb-ov th,.tb-ov td,.tb-ord th,.tb-ord td,.tb-ratio th,.tb-ratio td,.tb-cost th,.tb-cost td{padding-left:3px!important;padding-right:3px!important;}
+  .tb-ov td{font-size:11px!important;}
+  .tb-ord td:nth-child(5),.tb-ord td:nth-child(8){font-size:11px!important;}
+  .tb-ord td:nth-child(2){min-width:0;}
+  .ord-id{word-break:break-all;}
 }
 `;
 
@@ -2532,6 +2547,8 @@ function POSDashboard({
                             {o.date}
                           </div>
                           <div
+                            /* ord-id：359 以下的手機單號可以折行（15 碼單號是這張表最寬的東西） */
+                            className="ord-id"
                             style={{
                               fontSize: 10,
                               color: "var(--t3)",
@@ -3788,22 +3805,24 @@ function OverviewDashboard({
                       gap: 6,
                       fontSize: 11,
                       fontWeight: 600,
-                      opacity: empty ? 0.55 : 1,
                     }}
                   >
+                    {/* 沒營收的通路：只淡掉色塊，字改灰（t3）但看得清楚。以前整項 opacity 0.55，
+                        通路名只剩 2.5:1、「0.0%」1.7:1（門市還沒資料的 1–7 月整排都是，
+                        2026-11-12 正式站逐月回放才量到） */}
                     <div
                       style={{
                         width: 8,
                         height: 8,
                         borderRadius: 2,
                         background: p.c,
-                        opacity: p.op,
+                        opacity: empty ? p.op * 0.45 : p.op,
                       }}
                     />
-                    <span style={{ color: "var(--t2)" }}>{p.l}</span>
+                    <span style={{ color: empty ? "var(--t3)" : "var(--t2)" }}>{p.l}</span>
                     {/* 佔比用中性字：平台色只留在前面的色塊（蝦皮橘紅當字像虧損、
                         企業天藍／電話青綠當小字只有 3.3–3.7:1，老闆 2026-11-12 裁示） */}
-                    <span style={{ fontFamily: mono, color: empty ? "var(--t4)" : "var(--t1)" }}>
+                    <span style={{ fontFamily: mono, color: empty ? "var(--t3)" : "var(--t1)" }}>
                       {(share * 100).toFixed(1)}%
                     </span>
                     {/* 金額在手機隱藏（.lg-amt）：下面各平台卡片與通路卡片都看得到 */}
@@ -4059,8 +4078,8 @@ function OverviewDashboard({
                         background: "var(--s2)",
                         borderRadius: 8,
                         padding: "10px 12px",
-                        opacity: empty ? 0.55 : 1,
-                        borderLeft: `3px solid ${chColor(c)}`,
+                        /* 沒單的通路：左邊色條淡掉、通路名改灰，不再整張 opacity 0.55（名字 3.8:1、「無單」2.1:1） */
+                        borderLeft: `3px solid ${chColor(c)}${empty ? "55" : ""}`,
                       }}
                     >
                       <div
@@ -4071,7 +4090,13 @@ function OverviewDashboard({
                           marginBottom: 6,
                         }}
                       >
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)" }}>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            fontWeight: empty ? 600 : 700,
+                            color: empty ? "var(--t3)" : "var(--t1)",
+                          }}
+                        >
                           {c.label}
                         </span>
                         <span style={{ fontSize: 10, color: "var(--t3)", fontFamily: mono }}>
@@ -4229,14 +4254,16 @@ function OverviewDashboard({
                     whiteSpace: "nowrap",
                   };
                   return (
-                    <tr key={c.key} style={{ opacity: empty ? 0.55 : 1 }}>
+                    /* 沒單的通路列：通路名與「0」用灰字（t3），「—」維持最淺的 t4；
+                       不再整列 opacity 0.55（通路名只剩 1.7:1，幾乎看不到） */
+                    <tr key={c.key}>
                       <td
                         style={{
                           ...cellR,
                           textAlign: "left",
                           fontFamily: "inherit",
-                          fontWeight: 700,
-                          color: empty ? "var(--t4)" : "var(--t1)",
+                          fontWeight: empty ? 500 : 700,
+                          color: empty ? "var(--t3)" : "var(--t1)",
                           minWidth: 150,
                         }}
                       >
@@ -4285,7 +4312,9 @@ function OverviewDashboard({
                         {empty ? "—" : fmt$(c.rev)}
                       </td>
                       <td style={cellR}>{empty ? "—" : fmtP(share)}</td>
-                      <td style={cellR}>{empty ? "0" : c.orders}</td>
+                      <td style={empty ? { ...cellR, color: "var(--t3)" } : cellR}>
+                        {empty ? "0" : c.orders}
+                      </td>
                       <td style={cellR}>{empty ? "—" : fmt$(c.rev / c.orders)}</td>
                       <td
                         style={{
@@ -11390,7 +11419,11 @@ function ProfitCenter() {
                           ? "var(--blue)"
                           : p.id === "pos"
                           ? "var(--pos-accent)"
-                          : accentColor
+                          : p.id === "shopee"
+                          ? /* 蝦皮橘 #EE4D2D 配白字只有 3.66:1：分頁鈕自己用深一階的橘（淺色 4.58:1），
+                               頁面其他地方的蝦皮橘不動 */
+                            "var(--sp-tab)"
+                          : "var(--accent)"
                         : "var(--s1)",
                     /* 深色模式的平台色都很亮（官網綠 #2ECC71 配白字只有 2.1:1），選中的分頁改用深色字 */
                     color:
