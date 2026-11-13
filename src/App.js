@@ -800,6 +800,9 @@ th[tabindex]:focus-visible,tr[tabindex]:focus-visible{outline:2px solid var(--ac
 /* 文字／數字／日期輸入框：聚焦時邊框變色（以前只有游標，看不出現在打的是哪一格）（2026-11-12 掃描） */
 input[type=text]:focus,input[type=number]:focus,input[type=date]:focus,input:not([type]):focus{border-color:var(--accent)!important;}
 input[type=checkbox]{width:16px;height:16px;flex:0 0 auto;}
+/* 輸入框裡的灰色提示字（搜尋商品名稱…）：沒指定時是瀏覽器預設的 #757575，淺色 4.33:1、深色 3.82:1。
+   改用 t3（兩種主題對輸入框底色都 ≥4.5）。提示字不是文字節點，量測工具以前走不到（2026-11-13） */
+input::placeholder,textarea::placeholder{color:var(--t3);opacity:1;}
 /* 門市訂單淨利欄的開單異常 ⚠：桌機在毛利欄已經有，只在手機（毛利欄被隱藏）顯示（F28） */
 .ord-warn-m{display:none;}
 /* ─── 行動版版面（≤600px）─────────────────────────────────────────
@@ -883,6 +886,10 @@ input[type=checkbox]{width:16px;height:16px;flex:0 0 auto;}
   .wf-cell{flex:1 1 40%!important;min-width:0!important;margin-bottom:10px;}
   .wf-arr{display:none!important;}
   .wf-num{font-size:17px!important;}
+  /* 配方編輯器：一條組件拆兩行（名稱一行、用量與小計一行）。原本整行不換行最少要 364px，
+     編輯器一打開整張成本表被撐寬 81px（320 寬的手機 136px）要左右滑（2026-11-13） */
+  .rcp-line{flex-wrap:wrap;row-gap:2px;}
+  .rcp-name{flex:1 1 100%;min-width:0!important;}
   /* 泛稱品項成本率卡：只留 商品／本期營收／成本率／估算毛利率（2026-11-12 掃描） */
   .tb-ratio th,.tb-ratio td{padding-left:6px!important;padding-right:6px!important;}
   .tb-ratio th:nth-child(4),.tb-ratio td:nth-child(4){display:none;}
@@ -1257,6 +1264,13 @@ const FpInput = React.memo(function FpInput({ field, label, value, onCommit }) {
 const CompPicker = React.memo(function CompPicker({ compGroups, onPick }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
+  /* 清單（最高 260px）開在成本資料庫捲動區的下半部時，下半截會被捲動區切掉、要自己再捲才看得到。
+     打開的時候自動捲到整個清單看得見；只在打開那一下捲，打字篩選時不動 */
+  const listRef = useRef(null);
+  useEffect(() => {
+    if (open && listRef.current && listRef.current.scrollIntoView)
+      listRef.current.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [open]);
   const ql = q.trim().toLowerCase();
   const groups = compGroups
     .map(([cat, list]) => [
@@ -1311,13 +1325,15 @@ const CompPicker = React.memo(function CompPicker({ compGroups, onPick }) {
       />
       {open && (
         <div
+          ref={listRef}
           style={{
             position: "absolute",
             top: "calc(100% + 4px)",
             left: 0,
             zIndex: 30,
-            /* 手機上不超出畫面（配方編輯器在表格裡，320 固定寬會被切掉右半） */
-            width: "min(320px, calc(100vw - 64px))",
+            /* 跟輸入框同寬（最寬 300）：清單就一定落在表格捲動區裡面。以前用
+               min(320px, 100vw − 64px)，手機上比捲動區寬，右邊被切 14–20px */
+            width: "100%",
             maxHeight: 260,
             overflowY: "auto",
             background: "var(--s1)",
@@ -6162,6 +6178,13 @@ function ProfitCenter() {
   const [dragOver, setDragOver] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [recipeEditKey, setRecipeEditKey] = useState(null);
+  /* 成本資料庫是 480px 高的捲動區：按畫面下方那幾列的配方鈕，編輯器會開在看不到的地方
+     （像沒反應，要自己往下捲）。打開時把編輯器捲進來；只在打開那一下捲，之後使用者自己捲不干涉 */
+  useEffect(() => {
+    if (!recipeEditKey) return;
+    const el = document.getElementById("recipe-editor-row");
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  }, [recipeEditKey]);
   const [newComp, setNewComp] = useState({ name: "", price: "", cat: "" });
   /* 原料庫空的時候預設展開（引導新手），有內容則收合省空間 */
   const [compPanelOpen, setCompPanelOpen] = useState(
@@ -11120,7 +11143,7 @@ function ProfitCenter() {
                                   </td>
                                 </tr>
                                 {recipeEditKey === p.key && (
-                                  <tr>
+                                  <tr id="recipe-editor-row">
                                     <td
                                       colSpan={7}
                                       style={{
@@ -11157,6 +11180,9 @@ function ProfitCenter() {
                                         return (
                                           <div
                                             key={li}
+                                            /* rcp-line／rcp-name：手機上一條組件拆兩行（名稱一行、用量與小計一行）。
+                                               不換行的話這一行最少要 364px，會把整張成本表撐寬、要左右滑 */
+                                            className="rcp-line"
                                             style={{
                                               display: "flex",
                                               alignItems: "center",
@@ -11166,6 +11192,7 @@ function ProfitCenter() {
                                             }}
                                           >
                                             <span
+                                              className="rcp-name"
                                               style={{
                                                 minWidth: 150,
                                                 color: comp
