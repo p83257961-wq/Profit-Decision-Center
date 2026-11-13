@@ -713,6 +713,12 @@ const CSS = `
   .tb-ord{min-width:0!important;}
   .tb-ord td:nth-child(3)>div{max-width:130px!important;}
 }
+/* 1280–1359（電腦版最窄的那一段）：九欄在 1280「剛好放得下」是 2026-11-04 的資料。11-13 老闆把
+   六個通路都計入之後，企業採購、經銷的金額位數變多，表格最少要 936px、容器只有 913px，超出 23px
+   要橫滑。內距 14→10 省 72px，九欄都留著（備註欄有客人名字）；1360 起容器夠寬，維持原樣 */
+@media(min-width:1280px) and (max-width:1359.98px){
+  .tb-ord th,.tb-ord td{padding-left:10px!important;padding-right:10px!important;}
+}
 /* 1100 以下側欄還在、表格更窄：門市再收毛利欄（開單異常 ⚠ 改顯示在淨利欄，同手機） */
 @media(min-width:601px) and (max-width:1100.98px){
   .tb-ord th:nth-child(7),.tb-ord td:nth-child(7){display:none;}
@@ -901,6 +907,17 @@ input::placeholder,textarea::placeholder{color:var(--t3);opacity:1;}
   /* 360 寬原本只剩 0–2px 餘裕（真手機的等寬字型比電腦寬一點就會超出），內距 6→4 多留 16px；
      範圍拉到 400，381–400 這段原本也只剩 7px（2026-11-12 第三輪量餘裕） */
   .tb-ord th,.tb-ord td{padding-left:4px!important;padding-right:4px!important;}
+  /* 2026-11-13：老闆把六個通路都計入後金額位數變多，360 寬又只剩 2px 餘裕——再來一筆十萬以上的訂單
+     就超出。單號（17 碼）改成「放不下才折行」：平常欄寬夠、照樣一行，金額變寬時由單號那欄讓位
+     （多出 36px 可讓）。原本只有 359 以下這樣做，範圍拉到 400 */
+  .ord-id{word-break:break-all;}
+}
+/* 單號可折行之後，空出來的寬度會被通路欄吃掉，單號反而變成一律折兩行（375／390 的 iPhone 也是，
+   列高多 15%）。給通路欄一個偏好寬度 72px（最小仍是上面的 56px）：375 以上單號維持一行、通路欄
+   跟原本差不多寬、列高不變；360 單號折成兩行（那個寬度排一行本來就只剩 2px）。
+   359 以下通路欄另有規則（min-width:0），不套這條 */
+@media(min-width:360px) and (max-width:400.98px){
+  .tb-ord th:nth-child(2),.tb-ord td:nth-child(2){width:72px;}
 }
 /* 359 以下（舊款手機、或開了「放大顯示」的手機，最窄 320）：總覽六通路表多 22px、門市訂單表多 41px
    要橫滑。兩張表內距再收、金額字小一級、單號可折行（2026-11-12 第三輪，量到 320 為止） */
@@ -910,7 +927,6 @@ input::placeholder,textarea::placeholder{color:var(--t3);opacity:1;}
   .tb-ov td{font-size:11px!important;}
   .tb-ord td:nth-child(5),.tb-ord td:nth-child(8){font-size:11px!important;}
   .tb-ord td:nth-child(2){min-width:0;}
-  .ord-id{word-break:break-all;}
 }
 `;
 
@@ -6183,7 +6199,19 @@ function ProfitCenter() {
   useEffect(() => {
     if (!recipeEditKey) return;
     const el = document.getElementById("recipe-editor-row");
-    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+    if (!el || !el.scrollIntoView) return;
+    el.scrollIntoView({ block: "nearest" });
+    /* 表頭是黏在捲動區頂端的（th 的 position:sticky）。組件多的配方在手機上（一條組件佔兩行）會比
+       「捲動區扣掉表頭」還高，上面那一步貼齊捲動區頂端，標題就剛好被表頭蓋住。
+       往回捲被蓋住的那一段讓標題露出來；裝不下的下半部照常在捲動區裡往下滑
+       （2026-11-13 正式站：門市「禮盒包裝」8 個組件，手機上編輯器 631px、標題被蓋 37px） */
+    const table = el.closest("table");
+    const head = table && table.querySelector("thead th");
+    const box = table && table.parentElement;
+    if (head && box) {
+      const covered = head.getBoundingClientRect().bottom - el.getBoundingClientRect().top;
+      if (covered > 0) box.scrollTop -= covered;
+    }
   }, [recipeEditKey]);
   const [newComp, setNewComp] = useState({ name: "", price: "", cat: "" });
   /* 原料庫空的時候預設展開（引導新手），有內容則收合省空間 */
