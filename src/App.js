@@ -652,26 +652,42 @@ const CSS = `
   --dn:#C0392B;--dn-dim:rgba(192,57,43,0.05);--dn-bdr:rgba(192,57,43,0.18);
   --wn:#AD5A09;--wn-dim:rgba(173,90,9,0.05);--wn-bdr:rgba(173,90,9,0.18);
   --blue:#2E6DA4;--purple:#7B5EA7;--orange:#D4820A;--gold:#8B6914;
+  --kpi-info:#2E6DA4;--kpi-info2:#7B5EA7;
   --header-bg:rgba(255,255,255,0.92);
   --bar-track:#EAEAE6;
   --row-loss:rgba(192,57,43,0.04);
   --sp-accent:#EE4D2D;--sp-accent-dim:rgba(238,77,45,0.06);--sp-accent-bdr:rgba(238,77,45,0.2);--sp-tab:#D63F1E;
   --pos-accent:#7B5EA7;--pos-accent-dim:rgba(123,94,167,0.06);--pos-accent-bdr:rgba(123,94,167,0.2);
 }
+/* 深色主題（2026-11-14 改版，老闆：「深色配色有點花，所以我都用淺色；但看完 Claude 深色畫面
+   再移過去不太好」）。以前是近黑的藍底配高彩度的亮綠／亮橘／亮藍／紫，整頁同時十來種亮色。
+   改成跟 Claude 深色介面同一個調子，也跟營收戰情室同日改的那套一致：
+     底＝暖灰黑（#1F1E1D 頁面／#262624 卡片／#30302E 卡片內層），字＝米白三階；
+     狀態色（綠／紅／琥珀）與平台色降彩度、提高明度——當文字時對 s1／s2／s3 都 ≥4.5:1，
+     當底色時配深字（#1F1E1D）≥7:1；
+     圖表的色塊另外一組更沉的顏色，在總覽元件裡（greenC／spC／posC／posChColor）。
+   要改顏色先讀交接檔七之十八：哪個值從哪裡來、怎麼驗 */
 [data-theme="dark"]{
-  --bg:#080A0E;--s1:#0E1117;--s2:#151921;--s3:#1C212B;--s4:#282D38;
-  --t1:#E8E6E1;--t2:#9DA0A8;--t3:#7E838E;--t4:#656A73;
-  --accent:#2ECC71;--accent-dim:rgba(46,204,113,0.08);--accent-bdr:rgba(46,204,113,0.2);--accent-text:#2ECC71;
-  --up:#2ECC71;--up-dim:rgba(46,204,113,0.08);--up-bdr:rgba(46,204,113,0.2);
-  --dn:#EC5A4A;--dn-dim:rgba(236,90,74,0.08);--dn-bdr:rgba(236,90,74,0.2);
-  --wn:#E67E22;--wn-dim:rgba(230,126,34,0.08);--wn-bdr:rgba(230,126,34,0.2);
-  --blue:#3498DB;--purple:#9B7FCA;--orange:#F0A030;--gold:#C9A84C;
-  --header-bg:rgba(8,10,14,0.88);
-  --bar-track:#1C212B;
-  --row-loss:rgba(231,76,60,0.07);
-  --sp-accent:#FF6533;--sp-accent-dim:rgba(255,101,51,0.08);--sp-accent-bdr:rgba(255,101,51,0.22);--sp-tab:#FF6533;
-  --pos-accent:#9B7FCA;--pos-accent-dim:rgba(155,127,202,0.08);--pos-accent-bdr:rgba(155,127,202,0.22);
+  --bg:#1F1E1D;--s1:#262624;--s2:#30302E;--s3:#3A3936;--s4:#4C4B46;
+  --t1:#F0EEE6;--t2:#C2C0B6;--t3:#A6A49B;--t4:#807E76;
+  --accent:#7DBD96;--accent-dim:rgba(125,189,150,0.10);--accent-bdr:rgba(125,189,150,0.26);--accent-text:#7DBD96;
+  --up:#7DBD96;--up-dim:rgba(125,189,150,0.10);--up-bdr:rgba(125,189,150,0.26);
+  --dn:#EA9485;--dn-dim:rgba(234,148,133,0.08);--dn-bdr:rgba(234,148,133,0.26);
+  --wn:#D9B86F;--wn-dim:rgba(217,184,111,0.09);--wn-bdr:rgba(217,184,111,0.26);
+  --blue:#86B4D6;--purple:#B8A1DB;--orange:#E3A968;--gold:#CDA85F;
+  /* KPI 卡上沒有好壞意義的數字（預估總入帳、通路總成本佔比、真實抽成率、加購滲透率、加購品營收）：
+     淺色是藍／紫，深色改成跟一般數字一樣的米白——深色版有顏色的數字只剩「達標／注意／警戒」。
+     想要藍紫回來：這兩個值改成 --blue、--purple 的值就好 */
+  --kpi-info:#F0EEE6;--kpi-info2:#F0EEE6;
+  --header-bg:rgba(31,30,29,0.9);
+  --bar-track:#3A3936;
+  --row-loss:rgba(234,148,133,0.07);
+  --sp-accent:#E69D68;--sp-accent-dim:rgba(230,157,104,0.10);--sp-accent-bdr:rgba(230,157,104,0.28);--sp-tab:#E69D68;
+  --pos-accent:#B8A1DB;--pos-accent-dim:rgba(184,161,219,0.10);--pos-accent-bdr:rgba(184,161,219,0.28);
 }
+/* 原生元件（下拉選單彈出的清單、勾選框、內層捲軸）跟著主題走；不設的話深色頁面會彈出白底清單 */
+[data-theme="light"]{color-scheme:light;}
+[data-theme="dark"]{color-scheme:dark;}
 /* 文字階層（2026-11-12 掃描）：t3＝說明、標籤、判定句等「要讀的小字」，對白底與 s2 底都 ≥4.5:1；
    t4（淺 2.98:1／深 3.4:1）只給「—」佔位、分隔符號、圖示——有內容的字不要用 t4 */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -2869,11 +2885,18 @@ function OverviewDashboard({
   const spS = spData?.s;
   const isDark = theme === "dark";
   const narrow = useIsNarrow();
-  const greenC = isDark ? "#2ECC71" : "#1A6B3C";
-  const spC = isDark ? "#FF6533" : "#EE4D2D";
-  const posC = isDark ? "#9B7FCA" : "#7B5EA7";
-  const goldC = isDark ? "#C9A84C" : "#8B6914";
-  const gridC = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)";
+  /* 圖表色塊（進度條、圓餅、圖例方塊、卡片左緣、長條、趨勢線）。深色這一組 2026-11-14 改版：
+     彩度壓到 OKLCH C≈0.10、明度 0.58–0.66（比當文字用的 --accent 那組沉），在卡片底 #262624 上
+     對比 3.3–5.1:1。只當色塊用，不當字色（字用 t1／t2／t3 或狀態色） */
+  const greenC = isDark ? "#63A471" : "#1A6B3C";
+  const spC = isDark ? "#A9683F" : "#EE4D2D";
+  const posC = isDark ? "#856BAC" : "#7B5EA7";
+  const goldC = isDark ? "#AC8E44" : "#8B6914";
+  /* 少數地方把這幾個顏色當「字」用（六通路表的「老闆關係單」標籤、趨勢圖提示框的淨利）：
+     深色的色塊色當字只有 3.4–4.3:1，字另外用提亮的那一階（≥6:1）；淺色兩者同一個值 */
+  const posTextC = isDark ? "#B8A1DB" : posC;
+  const goldTextC = isDark ? "#CDA85F" : goldC;
+  const gridC = isDark ? "rgba(240,238,230,0.06)" : "rgba(0,0,0,0.05)";
 
   /* 門市在總覽一律「六通路全算」（不受門市頁的計入勾選影響）；
      淨利只算成本齊全的單（算不出成本的單計營收、不計淨利，下方會標示） */
@@ -2927,10 +2950,12 @@ function OverviewDashboard({
      五色用 dataviz 驗色工具做 OKLCH 搜尋挑出：照圓餅相鄰序（紫→經銷→電話→Omnichat→合作
      →企業→官網綠）在淺／深兩模式相鄰色弱 ΔE≥8、正常視力 ≥15 全過；避開狀態紅／琥珀與
      三平台色相；金＋橄欖綠在色弱模擬下同色（ΔE 2.6）故只留金。最接近的一對是 Omnichat 藍
-     vs 企業天藍（非相鄰），靠圖例名字補；深色唯一不及格是官網綠 #2ECC71 自己的亮度帶
-     （app 既有 --up，不動）。顏色跟著實體走：進度條、圓餅、圖例、下方五通路卡片同一張表 */
+     vs 企業天藍（非相鄰），靠圖例名字補。顏色跟著實體走：進度條、圓餅、圖例、下方五通路卡片同一張表。
+     深色這一組 2026-11-14 重挑（老闆嫌深色花）：八色（官網→蝦皮→門市→經銷→電話→Omnichat→合作→企業
+     →接回官網）用同一支驗色工具在 #262624 上搜「彩度總和最小、相鄰全過」的解——明度帶、彩度下限、
+     相鄰色弱 ΔE≥8（最差 8.4）、正常視力 ≥15、對底 ≥3:1 全過，連舊版不及格的官網綠也過了 */
   const posChColor = isDark
-    ? { dealer: "#AF8E2A", phone: "#3CA694", omnichat: "#4693F1", partner: "#DD628E", corp: "#1AA1C9" }
+    ? { dealer: "#A28137", phone: "#3EA692", omnichat: "#597AB6", partner: "#AB5E7A", corp: "#2285AC" }
     : { dealer: "#967600", phone: "#289785", omnichat: "#1467C2", partner: "#AD3665", corp: "#089AC3" };
   const chColor = (c) => posChColor[c.key] || posC;
 
@@ -4307,8 +4332,8 @@ function OverviewDashboard({
                                 fontSize: 10,
                                 padding: "1px 5px",
                                 borderRadius: 4,
-                                border: `1px solid ${posC}55`,
-                                color: posC,
+                                border: `1px solid ${posTextC}55`,
+                                color: posTextC,
                                 fontWeight: 700,
                                 whiteSpace: "nowrap",
                               }}
@@ -4744,7 +4769,7 @@ function OverviewDashboard({
                           <span
                             style={{
                               fontSize: 10,
-                              color: goldC,
+                              color: goldTextC,
                               fontWeight: 700,
                             }}
                           >
@@ -4755,7 +4780,7 @@ function OverviewDashboard({
                               fontSize: 12,
                               fontWeight: 800,
                               fontFamily: mono,
-                              color: netE.value >= 0 ? goldC : "var(--dn)",
+                              color: netE.value >= 0 ? goldTextC : "var(--dn)",
                             }}
                           >
                             {fmt$(netE.value)}
@@ -6341,6 +6366,23 @@ function ProfitCenter() {
   useEffect(() => {
     persist(SK.theme, theme);
   }, [theme, persist]);
+  /* 視窗捲軸的軌道、頁面捲過頭露出來的底，畫的是 <html> 的畫布，不在我們的根元素（data-theme 那層）裡：
+     畫布預設是白的，深色主題時視窗最右邊會有一條 4px 的白邊。深色時把底色與 color-scheme 也掛到 <html>；
+     淺色時清掉，維持瀏覽器原本的樣子（淺色主題不動） */
+  useEffect(() => {
+    const el = document.documentElement;
+    if (theme === "dark") {
+      el.style.backgroundColor = "#1F1E1D";
+      el.style.colorScheme = "dark";
+    } else {
+      el.style.backgroundColor = "";
+      el.style.colorScheme = "";
+    }
+    return () => {
+      el.style.backgroundColor = "";
+      el.style.colorScheme = "";
+    };
+  }, [theme]);
   useEffect(() => {
     persist(SK.platform, platform);
   }, [platform, persist]);
@@ -11480,11 +11522,12 @@ function ProfitCenter() {
                             "var(--sp-tab)"
                           : "var(--accent)"
                         : "var(--s1)",
-                    /* 深色模式的平台色都很亮（官網綠 #2ECC71 配白字只有 2.1:1），選中的分頁改用深色字 */
+                    /* 深色模式的平台色是提亮過的淺色（配白字不到 2.5:1），選中的分頁改用深色字
+                       （#1F1E1D＝深色頁面底，四顆都 ≥7:1） */
                     color:
                       platform === p.id
                         ? theme === "dark"
-                          ? "#0B0D11"
+                          ? "#1F1E1D"
                           : "#fff"
                         : "var(--t2)",
                     transition: "all .15s",
@@ -12468,7 +12511,7 @@ function ProfitCenter() {
                         {
                           l: "預估總入帳",
                           v: fmt$(slD.inbound),
-                          c: "var(--blue)",
+                          c: "var(--kpi-info)",
                           tip: "扣除金流、物流後的入帳金額（系統服務費另外月扣，含在營業費）",
                         },
                         {
@@ -12570,7 +12613,7 @@ function ProfitCenter() {
                         {
                           l: "通路總成本佔比",
                           v: fmtP(slD.realCommissionRate),
-                          c: "var(--blue)",
+                          c: "var(--kpi-info)",
                           ic: <CreditCard size={13} />,
                           tip: "金流＋物流 ÷ 營收（系統服務費含在營業費）",
                         },
@@ -12682,7 +12725,7 @@ function ProfitCenter() {
                         {
                           l: "加購品營收",
                           v: fmt$(slD.addOnRev),
-                          c: slD.addOnRev > 0 ? "var(--purple)" : "var(--t3)",
+                          c: slD.addOnRev > 0 ? "var(--kpi-info2)" : "var(--t3)",
                           h: `${slD.addOnQty} 件・佔營收 ${fmtP(
                             slD.rev > 0 ? slD.addOnRev / slD.rev : 0
                           )}`,
@@ -12692,7 +12735,7 @@ function ProfitCenter() {
                           v: fmtP(
                             slD.valid > 0 ? slD.addOnOrders / slD.valid : 0
                           ),
-                          c: "var(--blue)",
+                          c: "var(--kpi-info)",
                           h: `有加購的訂單 ${slD.addOnOrders}/${slD.valid} 筆`,
                           tip: "每月加價購檔期成效：有加購的訂單 ÷ 有效訂單",
                         },
@@ -13036,7 +13079,7 @@ function ProfitCenter() {
                         {
                           l: "預估總入帳",
                           v: fmt$(spS.tG - spS.tF),
-                          c: "var(--blue)",
+                          c: "var(--kpi-info)",
                           tip: "營收扣除手續費（賣場券已在營收扣過，不重複扣）",
                         },
                         {
@@ -13137,7 +13180,7 @@ function ProfitCenter() {
                         {
                           l: "真實抽成率",
                           v: fmtP(spS.feeRate),
-                          c: "var(--blue)",
+                          c: "var(--kpi-info)",
                           tip: "結算檔實際手續費＋蝦幣回饋 ÷ 營收（實測值，非固定費率）",
                         },
                         {
